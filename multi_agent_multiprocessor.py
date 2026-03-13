@@ -1118,9 +1118,13 @@ Evidence you may use:
 
 Instructions:
 - Rank variants by causal probability (0-1) and provide confidence (0-1).
-- For each variant, write a 2-3 sentence narrative connecting mutation and gene function to phenotype.
-- Cite evidence in brackets, e.g., [Effect=stop_gained; impact=HIGH; QUAL=83.1; GeneRef: PMID 12345].
+- For each ranked variant, set:
+  - rationale: a single concise sentence summarizing why this gene/variant is placed at its rank, based on the available evidence; do NOT use square brackets or inline evidence lists here.
+  - key_evidence: short bullet strings capturing the specific supporting facts (effect/impact, QUAL/DP, distilled_mechanism, WormBase context, PubMed refs, etc.).
+- Separately, for each variant in the annotations list, write a 2-3 sentence narrative connecting mutation and gene function to phenotype.
+- In the narrative, cite evidence in brackets, e.g., [Effect=stop_gained; impact=HIGH; QUAL=83.1; GeneRef: PMID 12345].
 - When a distilled mechanism is available for the gene, also include it explicitly in the bracketed evidence as distilled_mechanism="...".
+- When WB_Overview or MANUAL_DESCRIPTION_WB text is available, explicitly cite it in the bracketed evidence as WB_Overview="..." and/or MANUAL_DESCRIPTION_WB="..." (shortened as needed).
 - Prefer HIGH-impact (nonsense/frameshift/essential splice) > damaging missense > low/unknown.
 - Do not fabricate references; only cite provided PubMed links.
 - Output JSON only; no chain-of-thought."""
@@ -1287,7 +1291,7 @@ def single_shot_call() -> Optional[LLMVariantOutput]:
 
 NARR_SYSTEM = """You are an expert in C. elegans mystery cell of male(MCM) neuron biology.
 For each variant, write a 2-3 sentence narrative using provided fields, NCBI refs, and WormBase context if present.
-Cite evidence in brackets, e.g., [Effect=missense; impact=MODERATE; GeneRef: PMID 12345].
+Cite evidence in brackets, e.g., [Effect=missense; impact=MODERATE; GeneRef: PMID 12345]. When WB_Overview or MANUAL_DESCRIPTION_WB text is available, explicitly cite it in the bracketed evidence as WB_Overview="..." and/or MANUAL_DESCRIPTION_WB="..." (shortened as needed).
 Return JSON: {"annotations":[{"variant_id":"string","gene":"string","narrative":"string","narrative_confidence":0.0}]}"""
 
 
@@ -1342,6 +1346,7 @@ def llm_narratives_in_chunks(items: List[Dict[str, Any]], chunk_size: int = 18) 
 RANK_SYSTEM = """Rank variants for causing mystery cell of male(MCM) neuron loss using provided summaries.
 Rank genes (not duplicate variants of the same gene) and return exactly top_k entries.
 Heuristics: HIGH-impact > damaging missense > low/unknown; integrate NCBI refs, WormBase context (WB_Overview and MANUAL_DESCRIPTION_WB), and narrative confidence.
+Within each ranking item, set rationale to a single concise sentence summarizing why this gene/variant is ranked at that position, without square brackets or inline evidence lists; place detailed evidence and citations into the key_evidence bullet strings instead.
 Output JSON only with fields: summary, most_likely, ranking[]."""
 
 
@@ -1573,6 +1578,57 @@ orig_small_ren = orig_small[
 user_annotation_map_by_variant = {r["variant_id"]: r.get("user_annotation", "no annotation") for r in packed_dedup}
 candidate_by_variant = {r["variant_id"]: r for r in pref}
 written_paths: List[pathlib.Path] = []
+gene_ranks_per_run: List[Dict[str, int]] = []
+all_genes_across_runs: set[str] = set()
+
+
+def _rankdata(values: List[float]) -> List[float]:
+    n = len(values)
+    if n == 0:
+        return []
+    sorted_idx = sorted(range(n), key=lambda i: values[i])
+    ranks = [0.0] * n
+    i = 0
+    while i < n:
+        j = i
+        v = values[sorted_idx[i]]
+        while j + 1 < n and values[sorted_idx[j + 1]] == v:
+            j += 1
+        rank_start = i + 1
+        rank_end = j + 1
+        avg_rank = (rank_start + rank_end) / 2.0
+        for k in range(i, j + 1):
+            ranks[sorted_idx[k]] = avg_rank
+        i = j + 1
+    return ranks
+
+
+def _pearson_corr(x: List[float], y: List[float]) -> float:
+    n = len(x)
+    if n == 0 or n != len(y):
+        return 0.0
+    mean_x = sum(x) / n
+    mean_y = sum(y) / n
+    num = 0.0
+    den_x = 0.0
+    den_y = 0.0
+    for xi, yi in zip(x, y):
+        dx = xi - mean_x
+        dy = yi - mean_y
+        num += dx * dy
+        den_x += dx * dx
+        den_y += dy * dy
+    if den_x <= 0.0 or den_y <= 0.0:
+        return 0.0
+    return num / math.sqrt(den_x * den_y)
+
+
+def _spearman_corr_from_ranks(x: List[float], y: List[float]) -> float:
+    if not x or not y or len(x) != len(y):
+        return 0.0
+    rx = _rankdata(x)
+    ry = _rankdata(y)
+    return _pearson_corr(rx, ry)
 
 for shot_idx in range(1, NUM_LLM_RUNS + 1):
     print(f"\n=== LLM shot {shot_idx}/{NUM_LLM_RUNS} ===")
@@ -1657,6 +1713,16 @@ for shot_idx in range(1, NUM_LLM_RUNS + 1):
     ]
     final_df = final_df[[c for c in view_cols if c in final_df.columns]]
 
+    run_gene_ranks: Dict[str, int] = {}
+    for _, row in final_df.iterrows():
+        gene_name = str(row.get("gene") or "").strip()
+        if not gene_name:
+            continue
+        rank_value = int(row.get("rank"))
+        run_gene_ranks[gene_name] = rank_value
+        all_genes_across_runs.add(gene_name)
+    gene_ranks_per_run.append(run_gene_ranks)
+
     print("\n=== Top ranked genes (representative variants, preview) ===")
     _tab = tabulate(final_df.head(20).fillna(""), headers="keys", tablefmt="github", showindex=False)
     try:
@@ -1688,35 +1754,42 @@ for shot_idx in range(1, NUM_LLM_RUNS + 1):
             print("[Preview skipped (encoding)]")
 
     merged_path = OUTPUT_DIR / f"multi_agent_shot{shot_idx}_{SHOT_TIMESTAMP}.csv"
-    final_df.to_csv(merged_path, index=False)
+    final_df.to_csv(merged_path, index=False, encoding="utf-8-sig")
     written_paths.append(merged_path)
+
+if gene_ranks_per_run and all_genes_across_runs:
+    genes_sorted = sorted(all_genes_across_runs)
+    num_runs = len(gene_ranks_per_run)
+    max_rank_for_missing = TOP_K + 1
+
+    pairwise_corrs: List[float] = []
+    if num_runs >= 2:
+        for i in range(num_runs):
+            x = [float(gene_ranks_per_run[i].get(g, max_rank_for_missing)) for g in genes_sorted]
+            for j in range(i + 1, num_runs):
+                y = [float(gene_ranks_per_run[j].get(g, max_rank_for_missing)) for g in genes_sorted]
+                pairwise_corrs.append(_spearman_corr_from_ranks(x, y))
+        avg_pairwise_spearman = sum(pairwise_corrs) / len(pairwise_corrs) if pairwise_corrs else 0.0
+    else:
+        avg_pairwise_spearman = 1.0
+
+    gene_variances: Dict[str, float] = {}
+    for g in genes_sorted:
+        ranks = [float(run_map.get(g, max_rank_for_missing)) for run_map in gene_ranks_per_run]
+        mean_rank = sum(ranks) / num_runs
+        variance = sum((r - mean_rank) ** 2 for r in ranks) / num_runs
+        gene_variances[g] = variance
+
+    variability_path = OUTPUT_DIR / f"multi_agent_rank_variability_{SHOT_TIMESTAMP}.csv"
+    with variability_path.open("w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.writer(f)
+        writer.writerow([f"{avg_pairwise_spearman:.6f}"])
+        writer.writerow(["gene", "variance"])
+        for g in genes_sorted:
+            writer.writerow([g, f"{gene_variances[g]:.6f}"])
+    written_paths.append(variability_path)
 
 print("\nWROTE:")
 for p in written_paths:
     print(f"- {p.resolve()}")
 
-desktop = pathlib.Path(os.environ.get("USERPROFILE", "")) / "Desktop"
-if not desktop.exists():
-    desktop = pathlib.Path.home() / "Desktop"
-if desktop.exists() and written_paths:
-    for src in written_paths:
-        if src.exists():
-            dest = desktop / src.name
-            try:
-                shutil.move(str(src), str(dest))
-                print(f"[Moved] {src.name} -> {desktop}")
-            except Exception as e:
-                print(f"[Warning] Could not move {src} to desktop: {e}")
-    for item in OUTPUT_DIR.iterdir():
-        try:
-            if item.is_file():
-                item.unlink()
-            elif item.is_dir():
-                shutil.rmtree(item)
-        except Exception as e:
-            print(f"[Warning] Could not remove {item}: {e}")
-    try:
-        if OUTPUT_DIR.exists() and not any(OUTPUT_DIR.iterdir()):
-            OUTPUT_DIR.rmdir()
-    except Exception:
-        pass
