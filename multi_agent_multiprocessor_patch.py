@@ -1118,8 +1118,11 @@ Evidence you may use:
 
 Instructions:
 - Rank variants by causal probability (0-1) and provide confidence (0-1).
-- For each variant, write a 2-3 sentence narrative connecting mutation and gene function to phenotype.
-- Cite evidence in brackets, e.g., [Effect=stop_gained; impact=HIGH; QUAL=83.1; GeneRef: PMID 12345].
+- For each ranked variant, set:
+  - rationale: a single concise sentence summarizing why this gene/variant is placed at its rank, based on the available evidence; do NOT use square brackets or inline evidence lists here.
+  - key_evidence: short bullet strings capturing the specific supporting facts (effect/impact, QUAL/DP, distilled_mechanism, WormBase context, PubMed refs, etc.).
+- Separately, for each variant in the annotations list, write a 2-3 sentence narrative connecting mutation and gene function to phenotype.
+- In the narrative, cite evidence in brackets, e.g., [Effect=stop_gained; impact=HIGH; QUAL=83.1; GeneRef: PMID 12345].
 - When a distilled mechanism is available for the gene, also include it explicitly in the bracketed evidence as distilled_mechanism="...".
 - When WB_Overview or MANUAL_DESCRIPTION_WB text is available, explicitly cite it in the bracketed evidence as WB_Overview="..." and/or MANUAL_DESCRIPTION_WB="..." (shortened as needed).
 - Prefer HIGH-impact (nonsense/frameshift/essential splice) > damaging missense > low/unknown.
@@ -1343,6 +1346,7 @@ def llm_narratives_in_chunks(items: List[Dict[str, Any]], chunk_size: int = 18) 
 RANK_SYSTEM = """Rank variants for causing mystery cell of male(MCM) neuron loss using provided summaries.
 Rank genes (not duplicate variants of the same gene) and return exactly top_k entries.
 Heuristics: HIGH-impact > damaging missense > low/unknown; integrate NCBI refs, WormBase context (WB_Overview and MANUAL_DESCRIPTION_WB), and narrative confidence.
+Within each ranking item, set rationale to a single concise sentence summarizing why this gene/variant is ranked at that position, without square brackets or inline evidence lists; place detailed evidence and citations into the key_evidence bullet strings instead.
 Output JSON only with fields: summary, most_likely, ranking[]."""
 
 
@@ -1696,28 +1700,3 @@ print("\nWROTE:")
 for p in written_paths:
     print(f"- {p.resolve()}")
 
-desktop = pathlib.Path(os.environ.get("USERPROFILE", "")) / "Desktop"
-if not desktop.exists():
-    desktop = pathlib.Path.home() / "Desktop"
-if desktop.exists() and written_paths:
-    for src in written_paths:
-        if src.exists():
-            dest = desktop / src.name
-            try:
-                shutil.move(str(src), str(dest))
-                print(f"[Moved] {src.name} -> {desktop}")
-            except Exception as e:
-                print(f"[Warning] Could not move {src} to desktop: {e}")
-    for item in OUTPUT_DIR.iterdir():
-        try:
-            if item.is_file():
-                item.unlink()
-            elif item.is_dir():
-                shutil.rmtree(item)
-        except Exception as e:
-            print(f"[Warning] Could not remove {item}: {e}")
-    try:
-        if OUTPUT_DIR.exists() and not any(OUTPUT_DIR.iterdir()):
-            OUTPUT_DIR.rmdir()
-    except Exception:
-        pass
