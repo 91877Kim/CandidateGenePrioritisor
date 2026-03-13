@@ -11,6 +11,8 @@ import math
 import os
 import pathlib
 import re
+import shutil
+import sys
 import textwrap
 import time
 import xml.etree.ElementTree as ET
@@ -32,6 +34,19 @@ CSV_PATH = os.getenv("CSV_PATH", "drp1.csv")
 OUTPUT_DIR = pathlib.Path("llm_variant_prioritization_outputs")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
+_STDIN_LINES: List[str] = []
+if not sys.stdin.isatty():
+    try:
+        _STDIN_LINES = [line.rstrip("\n\r") for line in sys.stdin]
+    except Exception:
+        pass
+
+
+def _input(prompt: str) -> str:
+    if _STDIN_LINES:
+        return _STDIN_LINES.pop(0) if _STDIN_LINES else ""
+    return input(prompt).strip()
+
 # =========================
 # API configuration
 # =========================
@@ -45,7 +60,7 @@ OPENAI_BACKOFF_BASE = float(os.getenv("OPENAI_BACKOFF_BASE", "2.0"))
 
 TOP_K = 30
 RUN_ID = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-os.environ["OPENAI_API_KEY"] = "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"
+os.environ["OPENAI_API_KEY"] = "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"
 os.environ["NCBI_API_KEY"] = "605418d3446353da6f9b17b37310caf65e08"
 WORMBASE_HEADERS = {
     "Accept": "application/json",
@@ -272,7 +287,7 @@ def coerce_float(x: Any) -> Optional[float]:
 
 
 def prompt_user_annotation_file(script_dir: pathlib.Path) -> str:
-    file_name = input(
+    file_name = _input(
         "Optional user annotation CSV filename in this script directory "
         "(e.g. user_annotation.csv). Press Enter to skip: "
     ).strip()
@@ -974,7 +989,7 @@ def build_gene_knowledge_entry(
     gene_info["distilled_mechanism"] = str(distill.get("distilled_mechanism", "") or "")
     return gene_name, gene_info, len(refs), len(gene_info["filtered_pubmed_ids"])
 
-AGENT1_PROMPT = input(
+AGENT1_PROMPT = _input(
     "Agent1Prompt (define phenotype + possible mechanisms causing that phenotype): "
 ).strip()
 if not AGENT1_PROMPT:
@@ -985,11 +1000,11 @@ if not AGENT1_PROMPT:
     )
 
 phenotype_description = (
-    input("Phenotype description for Agent1 filtering (press Enter to reuse Agent1Prompt): ").strip()
+    _input("Phenotype description for Agent1 filtering (press Enter to reuse Agent1Prompt): ").strip()
     or AGENT1_PROMPT
 )
 target_mechanisms = (
-    input("Target mechanisms for Agent1 filtering (press Enter to reuse Agent1Prompt): ").strip()
+    _input("Target mechanisms for Agent1 filtering (press Enter to reuse Agent1Prompt): ").strip()
     or AGENT1_PROMPT
 )
 
@@ -1099,11 +1114,13 @@ Evidence you may use:
 - Structured fields from the csv file: Gene_name, Effect, impact_bucket,  QUAL, DP, SIFT/PolyPhen.
 - NCBI publications: provided PubMed links.
 - WormBase context when available: WB_Overview and MANUAL_DESCRIPTION_WB.
+- Agent1 distilled mechanisms per gene when available (gene_knowledge.distilled_mechanism).
 
 Instructions:
 - Rank variants by causal probability (0-1) and provide confidence (0-1).
 - For each variant, write a 2-3 sentence narrative connecting mutation and gene function to phenotype.
 - Cite evidence in brackets, e.g., [Effect=stop_gained; impact=HIGH; QUAL=83.1; GeneRef: PMID 12345].
+- When a distilled mechanism is available for the gene, also include it explicitly in the bracketed evidence as distilled_mechanism="...".
 - Prefer HIGH-impact (nonsense/frameshift/essential splice) > damaging missense > low/unknown.
 - Do not fabricate references; only cite provided PubMed links.
 - Output JSON only; no chain-of-thought."""
@@ -1225,12 +1242,12 @@ USER_PROMPT_MAIN = {
 }
 if use_user_annotation_for_llm:
     USER_PROMPT_MAIN["user_annotation"] = annotation_text
-user_prompt= str(input("PROMPT: "))
+user_prompt = _input("PROMPT: ").strip()
 USER_PROMPT_MAIN["instructions"]["notes"].append(user_prompt)
 
 
 def prompt_run_count() -> int:
-    raw = input("How many LLM runs do you want on this gene set? ").strip()
+    raw = _input("How many LLM runs do you want on this gene set? ").strip()
     try:
         n = int(raw)
         if n < 1:
@@ -1243,7 +1260,7 @@ def prompt_run_count() -> int:
 
 NUM_LLM_RUNS = prompt_run_count()
 shot_dt = datetime.now()
-SHOT_TIMESTAMP = f"{shot_dt.year}_{shot_dt.month}_{shot_dt.day}_{shot_dt.hour}_{shot_dt.minute}"
+SHOT_TIMESTAMP = shot_dt.strftime("%Y_%m_%d_%H_%M")
 
 # =========================
 # LLM calls
@@ -1619,6 +1636,8 @@ for shot_idx in range(1, NUM_LLM_RUNS + 1):
         "impact_bucket",
         "qual",
         "depth",
+        "WB_Overview",
+        "MANUAL_DESCRIPTION_WB",
         "user_annotation",
         "pubmed_ref_avaiable",
         "filtered_pubmed",
@@ -1630,13 +1649,16 @@ for shot_idx in range(1, NUM_LLM_RUNS + 1):
     final_df = final_df[[c for c in view_cols if c in final_df.columns]]
 
     print("\n=== Top ranked genes (representative variants, preview) ===")
-    print(tabulate(final_df.head(20).fillna(""), headers="keys", tablefmt="github", showindex=False))
+    _tab = tabulate(final_df.head(20).fillna(""), headers="keys", tablefmt="github", showindex=False)
+    try:
+        print(_tab)
+    except UnicodeEncodeError:
+        print("[Preview skipped (encoding); see CSV for full output]")
 
     if not rank_df.empty:
         top_row = rank_df.sort_values("rank").iloc[0]
         print("\n=== Most likely causal gene (representative variant, LLM) ===")
-        print(
-            tabulate(
+        _tab2 = tabulate(
                 [
                     [
                         int(top_row["rank"]),
@@ -1651,12 +1673,41 @@ for shot_idx in range(1, NUM_LLM_RUNS + 1):
                 headers=["rank", "variant_id", "gene", "prob", "conf", "narrative", "narr_conf"],
                 tablefmt="github",
             )
-        )
+        try:
+            print(_tab2)
+        except UnicodeEncodeError:
+            print("[Preview skipped (encoding)]")
 
-    merged_path = OUTPUT_DIR / f"LLM_shot{shot_idx}_{SHOT_TIMESTAMP}.csv"
+    merged_path = OUTPUT_DIR / f"multi_agent_shot{shot_idx}_{SHOT_TIMESTAMP}.csv"
     final_df.to_csv(merged_path, index=False)
     written_paths.append(merged_path)
 
 print("\nWROTE:")
 for p in written_paths:
     print(f"- {p.resolve()}")
+
+desktop = pathlib.Path(os.environ.get("USERPROFILE", "")) / "Desktop"
+if not desktop.exists():
+    desktop = pathlib.Path.home() / "Desktop"
+if desktop.exists() and written_paths:
+    for src in written_paths:
+        if src.exists():
+            dest = desktop / src.name
+            try:
+                shutil.move(str(src), str(dest))
+                print(f"[Moved] {src.name} -> {desktop}")
+            except Exception as e:
+                print(f"[Warning] Could not move {src} to desktop: {e}")
+    for item in OUTPUT_DIR.iterdir():
+        try:
+            if item.is_file():
+                item.unlink()
+            elif item.is_dir():
+                shutil.rmtree(item)
+        except Exception as e:
+            print(f"[Warning] Could not remove {item}: {e}")
+    try:
+        if OUTPUT_DIR.exists() and not any(OUTPUT_DIR.iterdir()):
+            OUTPUT_DIR.rmdir()
+    except Exception:
+        pass
