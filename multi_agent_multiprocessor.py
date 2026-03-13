@@ -1341,7 +1341,7 @@ def llm_narratives_in_chunks(items: List[Dict[str, Any]], chunk_size: int = 18) 
 
 RANK_SYSTEM = """Rank variants for causing mystery cell of male(MCM) neuron loss using provided summaries.
 Rank genes (not duplicate variants of the same gene) and return exactly top_k entries.
-Heuristics: HIGH-impact > damaging missense > low/unknown; integrate NCBI refs, WormBase context, and narrative confidence.
+Heuristics: HIGH-impact > damaging missense > low/unknown; integrate NCBI refs, WormBase context (WB_Overview and MANUAL_DESCRIPTION_WB), and narrative confidence.
 Output JSON only with fields: summary, most_likely, ranking[]."""
 
 
@@ -1559,7 +1559,16 @@ def rerank_exact_top_k_from_summaries(
 
 orig_small = pd.DataFrame(packed_dedup).copy()
 orig_small_ren = orig_small[
-    ["variant_id", "gene", "effect", "impact_bucket", "qual", "depth"]
+    [
+        "variant_id",
+        "gene",
+        "effect",
+        "impact_bucket",
+        "qual",
+        "depth",
+        "WB_Overview",
+        "MANUAL_DESCRIPTION_WB",
+    ]
 ].rename(columns={"gene": "Gene_name_csv"})
 user_annotation_map_by_variant = {r["variant_id"]: r.get("user_annotation", "no annotation") for r in packed_dedup}
 candidate_by_variant = {r["variant_id"]: r for r in pref}
