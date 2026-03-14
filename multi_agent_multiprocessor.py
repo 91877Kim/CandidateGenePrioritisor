@@ -1580,6 +1580,7 @@ candidate_by_variant = {r["variant_id"]: r for r in pref}
 written_paths: List[pathlib.Path] = []
 gene_ranks_per_run: List[Dict[str, int]] = []
 all_genes_across_runs: set[str] = set()
+gene_run_details_per_run: List[Dict[str, Dict[str, str]]] = []
 
 
 def _rankdata(values: List[float]) -> List[float]:
@@ -1722,6 +1723,24 @@ for shot_idx in range(1, NUM_LLM_RUNS + 1):
         run_gene_ranks[gene_name] = rank_value
         all_genes_across_runs.add(gene_name)
     gene_ranks_per_run.append(run_gene_ranks)
+    run_gene_details: Dict[str, Dict[str, str]] = {}
+    for _, row in final_df.iterrows():
+        gene_name = str(row.get("gene") or "").strip()
+        if not gene_name:
+            continue
+        run_gene_details[gene_name] = {
+            "Narrative": str(row.get("Narrative") or ""),
+            "Rationale": str(row.get("rationale") or ""),
+            "impact_bucket": str(row.get("impact_bucket") or ""),
+            "WB_Overview": str(row.get("WB_Overview") or ""),
+            "MANUAL_DESCRIPTION_WB": str(row.get("MANUAL_DESCRIPTION_WB") or ""),
+            "effect": str(row.get("effect") or ""),
+            "user_annotation": str(row.get("user_annotation") or ""),
+            "pubmed_ref_avaiable": str(row.get("pubmed_ref_avaiable") or ""),
+            "filtered_pubmed": str(row.get("filtered_pubmed") or ""),
+            "agent1_publication_comments": str(row.get("agent1_publication_comments") or ""),
+        }
+    gene_run_details_per_run.append(run_gene_details)
 
     print("\n=== Top ranked genes (representative variants, preview) ===")
     _tab = tabulate(final_df.head(20).fillna(""), headers="keys", tablefmt="github", showindex=False)
@@ -1773,12 +1792,16 @@ if gene_ranks_per_run and all_genes_across_runs:
     else:
         avg_pairwise_spearman = 1.0
 
+    gene_mean_ranks: Dict[str, float] = {}
     gene_variances: Dict[str, float] = {}
+    gene_run_counts: Dict[str, int] = {}
     for g in genes_sorted:
         ranks = [float(run_map.get(g, max_rank_for_missing)) for run_map in gene_ranks_per_run]
         mean_rank = sum(ranks) / num_runs
         variance = sum((r - mean_rank) ** 2 for r in ranks) / num_runs
+        gene_mean_ranks[g] = mean_rank
         gene_variances[g] = variance
+        gene_run_counts[g] = sum(1 for run_map in gene_ranks_per_run if g in run_map)
 
     variability_path = OUTPUT_DIR / f"multi_agent_rank_variability_{SHOT_TIMESTAMP}.csv"
     with variability_path.open("w", newline="", encoding="utf-8-sig") as f:
@@ -1788,6 +1811,221 @@ if gene_ranks_per_run and all_genes_across_runs:
         for g in genes_sorted:
             writer.writerow([g, f"{gene_variances[g]:.6f}"])
     written_paths.append(variability_path)
+
+    integrated_rows = sorted(
+        [
+            (
+                g,
+                gene_mean_ranks.get(g, float("nan")),
+                gene_variances.get(g, float("nan")),
+                gene_run_counts.get(g, 0),
+            )
+            for g in genes_sorted
+        ],
+        key=lambda x: x[1],
+    )
+
+    integrated_csv_path = OUTPUT_DIR / f"multi_agent_integrated_ranking_{SHOT_TIMESTAMP}.csv"
+    with integrated_csv_path.open("w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.writer(f)
+        writer.writerow(["gene", "average_rank", "rank_variance", "n_runs_seen"])
+        for g, mean_rank, variance, run_count in integrated_rows:
+            writer.writerow([g, f"{mean_rank:.6f}", f"{variance:.6f}", run_count])
+    written_paths.append(integrated_csv_path)
+
+    integrated_html_path = OUTPUT_DIR / f"multi_agent_integrated_ranking_{SHOT_TIMESTAMP}.html"
+    integrated_data_genes: List[Dict[str, Any]] = []
+    for g, mean_rank, variance, run_count in integrated_rows:
+        runs_detail: List[Dict[str, Any]] = []
+        gene_meta: Dict[str, Any] = {
+            "impact_bucket": "",
+            "WB_Overview": "",
+            "MANUAL_DESCRIPTION_WB": "",
+            "effect": "",
+            "user_annotation": "",
+            "pubmed_ref_avaiable": "",
+            "filtered_pubmed": "",
+            "agent1_publication_comments": "",
+        }
+        for idx in range(num_runs):
+            run_idx = idx + 1
+            ranks_map = gene_ranks_per_run[idx]
+            details_map = gene_run_details_per_run[idx] if idx < len(gene_run_details_per_run) else {}
+            d = (details_map.get(g, {}) or {})
+            # capture per-run narrative/rationale
+            runs_detail.append(
+                {
+                    "run_index": run_idx,
+                    "rank": ranks_map.get(g),
+                    "Narrative": d.get("Narrative", ""),
+                    "Rationale": d.get("Rationale", ""),
+                }
+            )
+            # capture static gene metadata once (same across runs)
+            if d and not gene_meta["impact_bucket"]:
+                gene_meta["impact_bucket"] = d.get("impact_bucket", "") or ""
+                gene_meta["WB_Overview"] = d.get("WB_Overview", "") or ""
+                gene_meta["MANUAL_DESCRIPTION_WB"] = d.get("MANUAL_DESCRIPTION_WB", "") or ""
+                gene_meta["effect"] = d.get("effect", "") or ""
+                gene_meta["user_annotation"] = d.get("user_annotation", "") or ""
+                gene_meta["pubmed_ref_avaiable"] = d.get("pubmed_ref_avaiable", "") or ""
+                gene_meta["filtered_pubmed"] = d.get("filtered_pubmed", "") or ""
+                gene_meta["agent1_publication_comments"] = d.get("agent1_publication_comments", "") or ""
+        integrated_data_genes.append(
+            {
+                "gene": g,
+                "average_rank": mean_rank,
+                "rank_variance": variance,
+                "n_runs_seen": run_count,
+                "impact_bucket": gene_meta["impact_bucket"],
+                "WB_Overview": gene_meta["WB_Overview"],
+                "MANUAL_DESCRIPTION_WB": gene_meta["MANUAL_DESCRIPTION_WB"],
+                "effect": gene_meta["effect"],
+                "user_annotation": gene_meta["user_annotation"],
+                "pubmed_ref_avaiable": gene_meta["pubmed_ref_avaiable"],
+                "filtered_pubmed": gene_meta["filtered_pubmed"],
+                "agent1_publication_comments": gene_meta["agent1_publication_comments"],
+                "runs": runs_detail,
+            }
+        )
+
+    integrated_payload = {
+        "timestamp": SHOT_TIMESTAMP,
+        "num_runs": num_runs,
+        "genes": integrated_data_genes,
+    }
+    data_json = json.dumps(integrated_payload, ensure_ascii=False).replace("</", "<\\/")
+
+    html_template = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Integrated Ranking</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 0; padding: 0; }
+    header { padding: 12px 16px; background: #1f2933; color: #f9fafb; }
+    header h1 { margin: 0; font-size: 20px; }
+    header p { margin: 4px 0 0 0; font-size: 13px; color: #d1d5db; }
+    main { display: flex; height: calc(100vh - 64px); }
+    #table-container { flex: 1; overflow: auto; padding: 12px 16px; }
+    table { border-collapse: collapse; width: 100%; font-size: 13px; }
+    th, td { border: 1px solid #e5e7eb; padding: 6px 8px; text-align: left; }
+    th { background: #f3f4f6; position: sticky; top: 0; z-index: 1; }
+    tr:hover { background: #eef2ff; cursor: pointer; }
+    #detail-panel { width: 38%; max-width: 520px; border-left: 1px solid #e5e7eb; padding: 12px 16px; overflow: auto; background: #f9fafb; }
+    #detail-title { font-weight: bold; margin-bottom: 8px; }
+    #detail-table { border-collapse: collapse; width: 100%; font-size: 12px; }
+    #detail-table th, #detail-table td { border: 1px solid #e5e7eb; padding: 4px 6px; vertical-align: top; }
+    #detail-table th { background: #e5e7eb; }
+    .muted { color: #6b7280; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Integrated Gene Ranking</h1>
+    <p>Click a gene to inspect narratives and rationales across runs (timestamp: {timestamp}, runs: {num_runs}).</p>
+  </header>
+  <main>
+    <section id="table-container">
+      <table id="genes-table">
+        <thead>
+          <tr>
+            <th>Gene</th>
+            <th>Average rank</th>
+            <th>Rank variance</th>
+            <th>Runs seen</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
+    <aside id="detail-panel">
+      <div id="detail-title" class="muted">Select a gene to see narratives, rationales, and gene-level context.</div>
+      <div id="detail-meta" class="muted" style="font-size:12px; margin-bottom:8px;"></div>
+      <table id="detail-table" style="display:none;">
+        <thead>
+          <tr>
+            <th>Run</th>
+            <th>Narrative</th>
+            <th>Rationale</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </aside>
+  </main>
+  <script>
+    const DATA = __DATA_JSON__;
+
+    function formatNumber(x) {
+      if (x === null || x === undefined || isNaN(x)) return '';
+      return x.toFixed(3);
+    }
+
+    function renderTable() {
+      const tbody = document.querySelector('#genes-table tbody');
+      tbody.innerHTML = '';
+      // DATA.genes is already sorted by average_rank ascending in the Python script.
+      const genes = DATA.genes || [];
+      for (const g of genes) {
+        const tr = document.createElement('tr');
+        tr.dataset.gene = g.gene;
+        tr.innerHTML = `
+          <td>${g.gene}</td>
+          <td>${formatNumber(g.average_rank)}</td>
+          <td>${formatNumber(g.rank_variance)}</td>
+          <td>${g.n_runs_seen}</td>
+        `;
+        tr.addEventListener('click', () => renderDetail(g));
+        tbody.appendChild(tr);
+      }
+    }
+
+    function renderDetail(geneEntry) {
+      const title = document.getElementById('detail-title');
+      const meta = document.getElementById('detail-meta');
+      const table = document.getElementById('detail-table');
+      const tbody = table.querySelector('tbody');
+      title.textContent = `Details for gene: ${geneEntry.gene}`;
+      const metaLines = [];
+      if (geneEntry.effect) metaLines.push(`<strong>Effect</strong>: ${geneEntry.effect}`);
+      if (geneEntry.impact_bucket) metaLines.push(`<strong>impact_bucket</strong>: ${geneEntry.impact_bucket}`);
+      if (geneEntry.user_annotation) metaLines.push(`<strong>user_annotation</strong>: ${geneEntry.user_annotation}`);
+      if (geneEntry.WB_Overview) metaLines.push(`<strong>WB_Overview</strong>: ${geneEntry.WB_Overview}`);
+      if (geneEntry.MANUAL_DESCRIPTION_WB) metaLines.push(`<strong>MANUAL_DESCRIPTION_WB</strong>: ${geneEntry.MANUAL_DESCRIPTION_WB}`);
+      if (geneEntry.pubmed_ref_avaiable) metaLines.push(`<strong>pubmed_ref_avaiable</strong>: ${geneEntry.pubmed_ref_avaiable}`);
+      if (geneEntry.filtered_pubmed) metaLines.push(`<strong>filtered_pubmed</strong>: ${geneEntry.filtered_pubmed}`);
+      if (geneEntry.agent1_publication_comments) metaLines.push(`<strong>agent1_publication_comments</strong>: ${geneEntry.agent1_publication_comments}`);
+      meta.innerHTML = metaLines.length ? metaLines.join('<br/>') : '';
+      tbody.innerHTML = '';
+      let hasRows = false;
+      for (const r of geneEntry.runs) {
+        const hasText = (r.Narrative && r.Narrative.trim()) || (r.Rationale && r.Rationale.trim());
+        if (!hasText) continue;
+        hasRows = true;
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${r.run_index}${r.rank ? ` (rank ${r.rank})` : ''}</td>
+          <td>${r.Narrative || ''}</td>
+          <td>${r.Rationale || ''}</td>
+        `;
+        tbody.appendChild(tr);
+      }
+      table.style.display = hasRows ? 'table' : 'none';
+      if (!hasRows) {
+        title.textContent += ' (no narratives/rationales recorded in the top list)';
+      }
+    }
+
+    renderTable();
+  </script>
+</body>
+</html>
+""".replace("__DATA_JSON__", data_json).replace("{timestamp}", SHOT_TIMESTAMP).replace("{num_runs}", str(num_runs))
+
+    integrated_html_path.write_text(html_template, encoding="utf-8")
+    written_paths.append(integrated_html_path)
 
 print("\nWROTE:")
 for p in written_paths:
