@@ -1,7 +1,7 @@
 #@title CloudMap-style BSA Classifier + Extra Features + Bootstrap & Permutation CIs (single block)
 
-# =================== Install deps ===================
-!pip -q install "xgboost>=2.0,<3" "lightgbm>=4.1,<5" pyarrow tqdm cyvcf2 > /dev/null
+# =================== Install deps (run in Colab: !pip install ...) ===================
+# !pip -q install "xgboost>=2.0,<3" "lightgbm>=4.1,<5" pyarrow tqdm cyvcf2
 
 # =================== Imports & environment hardening ===================
 import os, random, warnings, unittest, itertools, math
@@ -22,7 +22,17 @@ import lightgbm as lgb
 
 from scipy.ndimage import gaussian_filter1d
 from scipy.stats import binned_statistic
-from cyvcf2 import VCF
+try:
+    from cyvcf2 import VCF
+    _USE_CYVCF2 = True
+    pysam = None
+except Exception:
+    VCF = None
+    _USE_CYVCF2 = False
+    try:
+        import pysam
+    except Exception:
+        pysam = None
 
 # ---- Avoid Drive FUSE issues: stay in /content and disable joblib multiprocessing ----
 try:
@@ -50,12 +60,20 @@ try:
 except Exception:
     pass
 
-HOME_DIR = "/content/gdrive/MyDrive/Code/CloudMap3"
+_script_dir = Path(__file__).resolve().parent
+HOME_DIR = str(_script_dir)
 os.makedirs(HOME_DIR, exist_ok=True)
 
-# =================== File inputs (updated paths) ===================
-HOMO_VCF = "/content/gdrive/MyDrive/Code/CloudMap3/mutants/hu80//Galaxy117-[hu80HA_WS245_Homozygous_variants_SubtractedHobertHawaiianHomozygousAndHeterozygous].vcf"
-RATIO_VCF = "/content/gdrive/MyDrive/Code/CloudMap3/mutants/hu80/Galaxy114-[hu80HA_VariantsAtHighQualityHAPositions_MQ30_WS245_DP_0_BiallelicPositions_SNPsOnly].vcf"
+# =================== File inputs (defaults; overridden by mapping_input.txt if present) ===================
+_base = _script_dir.parent
+HOMO_VCF = str(_base / "drp5_hom_mutant_variants_hu80format.vcf")
+RATIO_VCF = str(_base / "drp5_HA_SNP_positions_hu80format.vcf")
+_mapping_input = _script_dir / "mapping_input.txt"
+if _mapping_input.exists():
+    with open(_mapping_input) as _f:
+        _lines = [ln.strip() for ln in _f if ln.strip() and not ln.strip().startswith("#")]
+    if len(_lines) >= 2:
+        HOMO_VCF, RATIO_VCF = _lines[0], _lines[1]
 
 # =================== Causal variant (UPDATED) ===================
 CAUSAL_CHR_LABEL = "chrIII"
@@ -136,6 +154,9 @@ def debug_causal_presence(homo_vcf, ratio_vcf, causal_chr_label, causal_pos, win
     Explain why the causal site may be absent from the homozygous SNP table.
     Reports exact/nearby entries in both VCFs around the causal coordinate.
     """
+    if not _USE_CYVCF2:
+        print("\n[Diagnostics] Skipped (requires cyvcf2).")
+        return
     print("\n[Diagnostics] Checking causal site presence in VCFs...")
     c = normalize_chr(causal_chr_label)
 
@@ -158,11 +179,11 @@ def debug_causal_presence(homo_vcf, ratio_vcf, causal_chr_label, causal_pos, win
     if not homo_found_exact:
         print(f"  Homo VCF: NOT found at exact position {c}:{causal_pos:,}.")
         if homo_nearby:
-            print(f"  Homo VCF: Nearby variants within ±{window_bp} bp:")
+            print(f"  Homo VCF: Nearby variants within +/- {window_bp} bp:")
             for pos, REF, ALT, QUAL, DP in sorted(homo_nearby, key=lambda x: abs(x[0]-causal_pos))[:6]:
                 print(f"    {c}:{pos:,}  REF={REF} ALT={ALT[0] if ALT else None} QUAL={QUAL} DP={DP}")
         else:
-            print(f"  Homo VCF: No nearby homozygous SNPs within ±{window_bp} bp.")
+            print(f"  Homo VCF: No nearby homozygous SNPs within +/- {window_bp} bp.")
 
     # Ratio VCF (exact and nearest)
     ratio_found_exact = False
@@ -235,6 +256,13 @@ class BulkedSegregantClassifier:
     # ----- VCF parsing -----
     def parse_homozygous_snps(self, vcf_path):
         """Parse homozygous SNPs VCF (mutant SNPs with Hawaiian SNPs subtracted)."""
+        if _USE_CYVCF2:
+            return self._parse_homozygous_snps_cyvcf2(vcf_path)
+        if pysam is not None:
+            return self._parse_homozygous_snps_pysam(vcf_path)
+        return self._parse_homozygous_snps_native(vcf_path)
+
+    def _parse_homozygous_snps_cyvcf2(self, vcf_path):
         rows = []
         vcf = VCF(vcf_path)
         has_sample = len(vcf.samples) > 0
@@ -244,100 +272,224 @@ class BulkedSegregantClassifier:
             if has_sample:
                 gts = v.genotypes[0] if v.genotypes is not None else None
                 if gts is None or len(gts) < 2: continue
-                # Keep only homozygous ALT calls (this may exclude causal if not 1/1)
-                if not ((gts[0] == 1) and (gts[1] == 1)):
-                    continue
-            chrom = normalize_chr(v.CHROM)
-            pos = int(v.POS)
-            ref = (v.REF or "").upper()
-            alt = (v.ALT[0] or "").upper()
+                if not ((gts[0] == 1) and (gts[1] == 1)): continue
+            chrom = normalize_chr(v.CHROM); pos = int(v.POS)
+            ref = (v.REF or "").upper(); alt = (v.ALT[0] or "").upper()
             qual = float(v.QUAL) if v.QUAL is not None else 30.0
             dp = None
             try:
                 dp_fmt = v.format('DP')
-                if dp_fmt is not None and len(dp_fmt) > 0:
-                    dp = int(dp_fmt[0][0])
-            except Exception:
-                dp = None
-            if dp is None:
-                dp = int(v.INFO.get('DP') or 20)
+                if dp_fmt is not None and len(dp_fmt) > 0: dp = int(dp_fmt[0][0])
+            except Exception: dp = None
+            if dp is None: dp = int(v.INFO.get('DP') or 20)
             rows.append({'CHROM': chrom, 'POS': pos, 'REF': ref, 'ALT': alt, 'QUAL': qual, 'DP': dp})
         df = pd.DataFrame(rows)
-        if df.empty:
-            raise ValueError(f"No usable SNPs parsed from {vcf_path}.")
+        if df.empty: raise ValueError(f"No usable SNPs parsed from {vcf_path}.")
+        return df
+
+    def _parse_homozygous_snps_pysam(self, vcf_path):
+        rows = []
+        vcf = pysam.VariantFile(vcf_path)
+        samples = list(vcf.header.samples)
+        has_sample = len(samples) > 0
+        for rec in vcf:
+            if len(rec.ref) != 1 or not rec.alts or len(rec.alts) != 1: continue
+            if has_sample:
+                s = samples[0]
+                gt = rec.samples[s].get('GT')
+                if gt is None or None in gt: continue
+                if not (gt[0] == 1 and gt[1] == 1): continue
+            chrom = normalize_chr(rec.chrom); pos = int(rec.pos); ref = (rec.ref or "").upper(); alt = (rec.alts[0] or "").upper()
+            qual = float(rec.qual) if rec.qual is not None else 30.0
+            dp = rec.samples[samples[0]].get('DP') if has_sample else None
+            if dp is None: dp = rec.info.get('DP')
+            dp = int(dp) if dp is not None else 20
+            rows.append({'CHROM': chrom, 'POS': pos, 'REF': ref, 'ALT': alt, 'QUAL': qual, 'DP': dp})
+        vcf.close()
+        df = pd.DataFrame(rows)
+        if df.empty: raise ValueError(f"No usable SNPs parsed from {vcf_path}.")
+        return df
+
+    def _parse_homozygous_snps_native(self, vcf_path):
+        """Pure-Python VCF parser fallback (no cyvcf2/pysam)."""
+        rows = []
+        with open(vcf_path) as f:
+            fmt_idx = None
+            for line in f:
+                if line.startswith('##'): continue
+                if line.startswith('#CHROM'):
+                    parts = line.strip().split('\t')
+                    fmt_idx = parts.index('FORMAT') if 'FORMAT' in parts else None
+                    continue
+                parts = line.strip().split('\t')
+                if len(parts) < 9: continue
+                chrom, pos_s, ref, alt, qual_s = parts[0], parts[1], parts[3], parts[4], parts[5]
+                if len(ref) != 1 or ',' in alt: continue  # SNP only, single alt
+                alts = alt.split(',')
+                if len(alts) != 1: continue
+                if fmt_idx is not None and len(parts) > fmt_idx + 1:
+                    fmt_parts = parts[fmt_idx].split(':')
+                    samp = parts[fmt_idx + 1]
+                    gt_idx = fmt_parts.index('GT') if 'GT' in fmt_parts else -1
+                    ad_idx = fmt_parts.index('AD') if 'AD' in fmt_parts else -1
+                    dp_idx = fmt_parts.index('DP') if 'DP' in fmt_parts else -1
+                    samp_parts = samp.split(':')
+                    if gt_idx >= 0 and len(samp_parts) > gt_idx:
+                        gt = samp_parts[gt_idx]
+                        if gt != '1/1' and gt != '1|1': continue
+                qual = float(qual_s) if qual_s != '.' else 30.0
+                dp = 20
+                if fmt_idx is not None and len(parts) > fmt_idx + 1:
+                    fmt_parts = parts[fmt_idx].split(':')
+                    samp_parts = parts[fmt_idx + 1].split(':')
+                    if 'DP' in fmt_parts:
+                        i = fmt_parts.index('DP')
+                        if i < len(samp_parts) and samp_parts[i].isdigit(): dp = int(samp_parts[i])
+                rows.append({'CHROM': normalize_chr(chrom), 'POS': int(pos_s), 'REF': ref.upper(), 'ALT': alts[0].upper(), 'QUAL': qual, 'DP': dp})
+        df = pd.DataFrame(rows)
+        if df.empty: raise ValueError(f"No usable SNPs parsed from {vcf_path}.")
         return df
 
     def parse_allele_ratios(self, vcf_path):
         """Parse allele ratios at Hawaiian SNP sites VCF. RATIO from AD/AO/RO/AF; DEPTH from DP/AD."""
+        if _USE_CYVCF2:
+            return self._parse_allele_ratios_cyvcf2(vcf_path)
+        if pysam is not None:
+            return self._parse_allele_ratios_pysam(vcf_path)
+        return self._parse_allele_ratios_native(vcf_path)
+
+    def _parse_allele_ratios_cyvcf2(self, vcf_path):
         rows = []
         vcf = VCF(vcf_path)
         has_sample = len(vcf.samples) > 0
         for v in vcf:
             if not v.is_snp: continue
             if v.ALT is None or len(v.ALT) < 1: continue
-            chrom = normalize_chr(v.CHROM)
-            pos = int(v.POS)
+            chrom = normalize_chr(v.CHROM); pos = int(v.POS)
             ratio = None; depth = None
-
-            # Try AD (ref, alt1, ...)
             try:
                 AD = v.format('AD') if has_sample else None
-            except Exception:
-                AD = None
-            if AD is not None and len(AD) > 0 and AD[0] is not None and len(AD[0]) >= 2:
-                ref_count = float(AD[0][0] or 0.0)
-                alt_count = float(sum([a for a in AD[0][1:] if a is not None]))
-                total = ref_count + alt_count
-                if total > 0: ratio = alt_count / total
-                depth = int(total)
-
-            # Try AO/RO
+                if AD is not None and len(AD) > 0 and AD[0] is not None and len(AD[0]) >= 2:
+                    ref_count = float(AD[0][0] or 0.0)
+                    alt_count = float(sum([a for a in AD[0][1:] if a is not None]))
+                    total = ref_count + alt_count
+                    if total > 0: ratio = alt_count / total; depth = int(total)
+            except Exception: pass
             if ratio is None:
                 try:
                     AO = v.format('AO') if has_sample else None
                     RO = v.format('RO') if has_sample else None
-                except Exception:
-                    AO = RO = None
-                if AO is not None and RO is not None and len(AO) > 0 and len(RO) > 0:
-                    ref_count = float(RO[0] or 0.0)
-                    alt_count = float(sum([a for a in AO[0] if a is not None]))
-                    total = ref_count + alt_count
-                    if total > 0: ratio = alt_count / total
-                    depth = int(total)
-
-            # Try AF
+                    if AO and RO and len(AO) > 0 and len(RO) > 0:
+                        ref_count = float(RO[0] or 0.0)
+                        alt_count = float(sum([a for a in AO[0] if a is not None]))
+                        total = ref_count + alt_count
+                        if total > 0: ratio = alt_count / total; depth = int(total)
+                except Exception: pass
             if ratio is None:
                 af = None
                 try:
                     AF_fmt = v.format('AF') if has_sample else None
-                    if AF_fmt is not None and len(AF_fmt) > 0 and len(AF_fmt[0]) >= 1:
-                        af = float(AF_fmt[0][0])
-                except Exception:
-                    af = v.INFO.get('AF')
-                    af = float(af) if af is not None else None
-                if af is not None:
-                    ratio = float(max(0.0, min(1.0, af)))
-
-            # Depth: DP FORMAT or INFO
+                    if AF_fmt and len(AF_fmt) > 0 and len(AF_fmt[0]) >= 1: af = float(AF_fmt[0][0])
+                except: af = v.INFO.get('AF'); af = float(af) if af is not None else None
+                if af is not None: ratio = float(max(0.0, min(1.0, af)))
             try:
                 DP = v.format('DP') if has_sample else None
-                if DP is not None and len(DP) > 0:
-                    depth = int(DP[0][0])
-            except Exception:
-                pass
-            if depth is None:
-                dp_info = v.INFO.get('DP')
-                if dp_info is not None:
-                    depth = int(dp_info)
-            if depth is None:
-                depth = 100
-
-            if ratio is None:
-                continue
+                if DP and len(DP) > 0: depth = int(DP[0][0])
+            except: pass
+            if depth is None: depth = int(v.INFO.get('DP')) if v.INFO.get('DP') is not None else 100
+            if ratio is None: continue
             rows.append({'CHROM': chrom, 'POS': pos, 'RATIO': float(ratio), 'DEPTH': int(depth)})
         df = pd.DataFrame(rows)
-        if df.empty:
-            raise ValueError(f"No usable ratio sites parsed from {vcf_path}.")
+        if df.empty: raise ValueError(f"No usable ratio sites parsed from {vcf_path}.")
+        return df
+
+    def _parse_allele_ratios_pysam(self, vcf_path):
+        rows = []
+        vcf = pysam.VariantFile(vcf_path)
+        samples = list(vcf.header.samples)
+        has_sample = len(samples) > 0
+        for rec in vcf:
+            if len(rec.ref) != 1 or not rec.alts: continue
+            chrom = normalize_chr(rec.chrom); pos = int(rec.pos)
+            ratio = None; depth = None
+            if has_sample:
+                s = samples[0]
+                ad = rec.samples[s].get('AD')
+                if ad is not None and len(ad) >= 2:
+                    refc = float(ad[0] or 0); altc = float(sum(ad[1:]) if len(ad) > 1 else 0)
+                    total = refc + altc
+                    if total > 0: ratio = altc / total; depth = int(total)
+                if ratio is None:
+                    ao = rec.samples[s].get('AO'); ro = rec.samples[s].get('RO')
+                    if ao is not None and ro is not None:
+                        refc = float(ro); altc = float(sum(ao) if isinstance(ao, (list, tuple)) else ao)
+                        total = refc + altc
+                        if total > 0: ratio = altc / total; depth = int(total)
+                if ratio is None:
+                    af = rec.samples[s].get('AF') or rec.info.get('AF')
+                    if af is not None:
+                        av = af[0] if isinstance(af, (tuple, list)) else af
+                        ratio = max(0.0, min(1.0, float(av)))
+                if depth is None: depth = rec.samples[s].get('DP')
+            if not has_sample and ratio is None:
+                af = rec.info.get('AF')
+                if af is not None:
+                    av = af[0] if isinstance(af, (tuple, list)) else af
+                    ratio = max(0.0, min(1.0, float(av)))
+            if depth is None: depth = rec.info.get('DP')
+            depth = int(depth) if depth is not None else 100
+            if ratio is None: continue
+            rows.append({'CHROM': chrom, 'POS': pos, 'RATIO': float(ratio), 'DEPTH': int(depth)})
+        vcf.close()
+        df = pd.DataFrame(rows)
+        if df.empty: raise ValueError(f"No usable ratio sites parsed from {vcf_path}.")
+        return df
+
+    def _parse_allele_ratios_native(self, vcf_path):
+        """Pure-Python VCF parser fallback for ratio VCF (AD or AF)."""
+        rows = []
+        with open(vcf_path) as f:
+            fmt_idx = None
+            for line in f:
+                if line.startswith('##'): continue
+                if line.startswith('#CHROM'):
+                    parts = line.strip().split('\t')
+                    fmt_idx = parts.index('FORMAT') if 'FORMAT' in parts else None
+                    continue
+                parts = line.strip().split('\t')
+                if len(parts) < 8: continue
+                chrom, pos_s, ref, alt, info = parts[0], parts[1], parts[3], parts[4], parts[7]
+                if len(ref) != 1 or not alt or alt == '.': continue
+                ratio = None; depth = 100
+                if fmt_idx is not None and len(parts) > fmt_idx + 1:
+                    fmt_parts = parts[fmt_idx].split(':')
+                    samp_parts = parts[fmt_idx + 1].split(':')
+                    if 'AD' in fmt_parts:
+                        i = fmt_parts.index('AD')
+                        if i < len(samp_parts):
+                            ad_vals = samp_parts[i].split(',')
+                            if len(ad_vals) >= 2 and all(x.isdigit() for x in ad_vals[:2]):
+                                refc = float(ad_vals[0]); altc = float(ad_vals[1])
+                                total = refc + altc
+                                if total > 0: ratio = altc / total; depth = int(total)
+                    if ratio is None and 'AF' in fmt_parts:
+                        i = fmt_parts.index('AF')
+                        if i < len(samp_parts):
+                            try: ratio = float(samp_parts[i].split(',')[0]); ratio = max(0, min(1, ratio))
+                            except: pass
+                    if 'DP' in fmt_parts and depth == 100:
+                        i = fmt_parts.index('DP')
+                        if i < len(samp_parts) and samp_parts[i].isdigit(): depth = int(samp_parts[i])
+                if ratio is None and 'AF=' in info:
+                    for kv in info.split(';'):
+                        if kv.startswith('AF='):
+                            try: ratio = float(kv.split('=')[1].split(',')[0]); ratio = max(0, min(1, ratio))
+                            except: pass
+                            break
+                if ratio is None: continue
+                rows.append({'CHROM': normalize_chr(chrom), 'POS': int(pos_s), 'RATIO': float(ratio), 'DEPTH': int(depth)})
+        df = pd.DataFrame(rows)
+        if df.empty: raise ValueError(f"No usable ratio sites parsed from {vcf_path}.")
         return df
 
     # ----- features -----
@@ -551,7 +703,7 @@ class BulkedSegregantClassifier:
             p = est_fold.predict_proba(X[te])[:,1]
             oof[te] = p
             aucs.append(roc_auc_score(y[te], p))
-        print(f"CV ROC-AUC (grouped by mutant): {np.mean(aucs):.3f} ± {np.std(aucs):.3f}")
+        print(f"CV ROC-AUC (grouped by mutant): {np.mean(aucs):.3f} +/-  {np.std(aucs):.3f}")
 
         # Threshold by PR-F1 on OOF
         precision, recall, thr = precision_recall_curve(y, oof)
@@ -765,10 +917,10 @@ class BulkedSegregantClassifier:
                                    nearest_tol_bp=1000, causal_chr_label=None, causal_pos=None):
         """
         Build and print a table of homozygous SNPs inside the mapping interval with:
-          • EMS tagging (G/C->A/T)
-          • Hawaiian allele ratio at the same position (or nearest within ±nearest_tol_bp)
-          • Causal labeling (IS_CAUSAL, DIST_TO_CAUSAL_BP) if causal is provided
-          • SORTED BY POSITION (do not bump causal to the top)
+          - EMS tagging (G/C->A/T)
+          - Hawaiian allele ratio at the same position (or nearest within +/- nearest_tol_bp)
+          - Causal labeling (IS_CAUSAL, DIST_TO_CAUSAL_BP) if causal is provided
+          - SORTED BY POSITION (do not bump causal to the top)
         """
         Path(save_prefix).parent.mkdir(parents=True, exist_ok=True)
         if self._last_homo_df is None or self._last_ratio_df is None:
@@ -847,7 +999,7 @@ class BulkedSegregantClassifier:
             print(sub.to_string(index=False, float_format=lambda x: f"{x:.3f}"))
 
         out_csv = f"{save_prefix}_variants.csv"
-        sub.to_csv(out_csv, index=False)
+        sub.to_csv(out_csv, index=False, na_rep='nan')
         print(f"Saved full variant table to: {out_csv}")
         return sub
 
@@ -888,15 +1040,15 @@ class BulkedSegregantClassifier:
                      "Shading: light=all mapping regions; orange=chosen interval containing causal site", y=1.02)
         plt.tight_layout(); plt.show()
 
-    # ----- UPDATED: compact plot — y-axis is Parental_ratio (0–1), variants as colored bars on x-axis; no probability lines -----
+    # ----- UPDATED: compact plot — y-axis is Parental_ratio (0-1), variants as colored bars on x-axis; no probability lines -----
     def plot_compact_regions_with_variants(self, mapping_regions, nearest_tol_bp=1000):
         """
         For each chromosome, show ONLY the top-confidence called mapping region, overlaying:
-          • Vertical bars at each homozygous variant position (x = POS).
-              - Bar height = Parental_ratio = 1 − Hawaiian_ratio (from nearest ratio site within tolerance).
+          - Vertical bars at each homozygous variant position (x = POS).
+              - Bar height = Parental_ratio = 1 - Hawaiian_ratio (from nearest ratio site within tolerance).
               - EMS variants (G/C->A/T): red bars
               - non-EMS variants: blue bars
-          • A downward arrow labeled 'predicted peak' at the region's peak_center, pointing to the bar height at the
+          - A downward arrow labeled 'predicted peak' at the region's peak_center, pointing to the bar height at the
             nearest variant to the peak_center (or the top of the axis if no nearby ratio is available).
         No region-diagnostic probability lines or axis are shown.
         """
@@ -982,7 +1134,7 @@ class BulkedSegregantClassifier:
             ax.set_xlim(start, end)
             ax.set_ylim(0, 1)
             ax.set_yticks([0, 0.25, 0.5, 0.75, 1.0])
-            ax.set_ylabel("Parental ratio (1 − Hawaiian)", fontsize=9)
+            ax.set_ylabel("Parental ratio (1 - Hawaiian)", fontsize=9)
             title = f"Chromosome {chrom}: {start:,}-{end:,}  conf={r['confidence']:.2f}"
             ax.set_title(title, fontsize=10)
             ax.grid(axis='y', alpha=0.2)
@@ -991,7 +1143,7 @@ class BulkedSegregantClassifier:
 
         axes[-1].set_xlabel("Position (bp)")
         plt.suptitle("Compact view: called mapping regions — variant bars colored by class\n"
-                     "Height = Parental ratio (0–1). Arrow points DOWN to nearest variant at predicted peak.", y=1.02)
+                     "Height = Parental ratio (0-1). Arrow points DOWN to nearest variant at predicted peak.", y=1.02)
         plt.tight_layout()
         plt.show()
 
@@ -1079,20 +1231,20 @@ def bootstrap_difference_ci(pred_df, region1, region2, B=2000, block_size=3, see
 # =================== Printing helpers (explanations) ===================
 def explain_labeling_and_thresholds(p_edge_min=0.65, min_conf=0.60, min_size=100_000):
     print("\n[How windows/regions are labeled]")
-    print("  • Window classifier positive class (1)  = 'Mutant Parent / linked' (parental).")
+    print("  - Window classifier positive class (1)  = 'Mutant Parent / linked' (parental).")
     print("    Negative class (0) = 'Hawaiian / unlinked'.")
-    print("  • Features: enriched set: homozygous SNP density/spacing/quality (+EMS, Ti/Tv),")
+    print("  - Features: enriched set: homozygous SNP density/spacing/quality (+EMS, Ti/Tv),")
     print("    Hawaiian allele-ratio stats (+depth-weighted fractions, IQR/MAD, longest low run, inter-marker gaps),")
-    print("    and combined indicators (e.g., mutant_score = homo_snp_density × (1 − mean_ratio)).")
+    print("    and combined indicators (e.g., mutant_score = homo_snp_density * (1 - mean_ratio)).")
     print("  - Pipeline: calibrated XGBoost probability -> 80/20 blend with heuristic -> Gaussian smoothing -> 2-state HMM.")
-    print(f"  • Region call: contiguous HMM=1 windows; edges trimmed to ≥ {p_edge_min:.2f}; require mean conf ≥ {min_conf:.2f} and size ≥ {min_size/1e3:.0f} kb.")
+    print(f"  - Region call: contiguous HMM=1 windows; edges trimmed to >= {p_edge_min:.2f}; require mean conf >= {min_conf:.2f} and size >= {min_size/1e3:.0f} kb.")
 
 def explain_top_region_fields():
     print("\n[Explanation of 'Top predicted mapping regions' fields]")
     print("  size      = physical length of the trimmed interval")
     print("  conf      = mean(prob_mutant_smooth) across windows inside the interval")
     print("  p5,p95    = 5th and 95th percentiles of prob_mutant_smooth inside the interval")
-    print("  edges     = (left_edge_p, right_edge_p) after trimming; these are ≥ p_edge_min by construction")
+    print("  edges     = (left_edge_p, right_edge_p) after trimming; these are >= p_edge_min by construction")
 
 def pick_chr_region_by_coords_or_top(regions, chrom, start=None, end=None):
     """Prefer exact coordinate match; else return the top-confidence region on that chromosome."""
@@ -1125,13 +1277,13 @@ def compare_regions_confidence(r1, label1, r2, label2, p_edge_min=0.65):
     print(f"\n[Confidence comparison] {label1} vs {label2}")
     print(f"  conf_{label1} = {r1['confidence']:.3f} ; conf_{label2} = {r2['confidence']:.3f}")
     print(f"  absolute difference = {diff:.3f}  (~{diff*100:.1f} percentage points)")
-    print(f"  relative lift       = {rel:.2f}×")
+    print(f"  relative lift       = {rel:.2f}x")
     print("  Interpretation:")
-    print(f"    • Both edges trimmed to ≥ p_edge_min={p_edge_min:.2f}: "
+    print(f"    - Both edges trimmed to >= p_edge_min={p_edge_min:.2f}: "
           f"{label1} edges=({r1['edge_left_p']:.2f},{r1['edge_right_p']:.2f}), "
           f"{label2} edges=({r2['edge_left_p']:.2f},{r2['edge_right_p']:.2f}).")
-    print(f"    • Interior strength: {label1} p95={r1['p95']:.2f} vs {label2} p95={r2['p95']:.2f}.")
-    print("    • Higher conf and higher p95 indicate a stronger, more consistent parental-like signal in the region with higher values.\n")
+    print(f"    - Interior strength: {label1} p95={r1['p95']:.2f} vs {label2} p95={r2['p95']:.2f}.")
+    print("    - Higher conf and higher p95 indicate a stronger, more consistent parental-like signal in the region with higher values.\n")
 
 # =================== Pipeline ===================
 def run_pipeline(homo_vcf, ratio_vcf, causal_chr_label, causal_pos,
@@ -1189,7 +1341,7 @@ def run_pipeline(homo_vcf, ratio_vcf, causal_chr_label, causal_pos,
         # pick the top chrIII region anyway for comparison/table
         best_chrIII = pick_chr_region_by_coords_or_top(regions, 'III')
 
-    # chrV: prefer the slightly gray interval 17,550,000–18,000,000; else best overlap / top
+    # chrV: prefer the slightly gray interval 17,550,000-18,000,000; else best overlap / top
     target_chrV = (17_550_000, 18_000_000)
     best_chrV = pick_chr_region_by_coords_or_top(regions, 'V', start=target_chrV[0], end=target_chrV[1])
     if best_chrV:
@@ -1211,9 +1363,9 @@ def run_pipeline(homo_vcf, ratio_vcf, causal_chr_label, causal_pos,
         )
         if (tbl_chrIII is None) or (not (tbl_chrIII['POS'] == CAUSAL_POS).any()):
             print("\n[Explanation] The causal site is not in the homozygous SNP table because:")
-            print("  • It may not be present in the homozygous VCF at exactly that POS (filtered by caller).")
-            print("  • It may not be a homozygous ALT call (we require GT=1/1), or it might be heterozygous.\n"
-                  "  • The homozygous VCF has Hawaiian SNPs subtracted; the causal site may not pass those filters.")
+            print("  - It may not be present in the homozygous VCF at exactly that POS (filtered by caller).")
+            print("  - It may not be a homozygous ALT call (we require GT=1/1), or it might be heterozygous.\n"
+                  "  - The homozygous VCF has Hawaiian SNPs subtracted; the causal site may not pass those filters.")
             debug_causal_presence(homo_vcf, ratio_vcf, causal_chr_label, causal_pos, window_bp=2000)
 
     if best_chrV:
@@ -1230,7 +1382,7 @@ def run_pipeline(homo_vcf, ratio_vcf, causal_chr_label, causal_pos,
     clf.plot_genome_predictions(preds, mapping_regions=regions, ratio_df=clf._last_ratio_df, highlight_region=best_chrIII if best_chrIII else None)
 
     # UPDATED compact per-chromosome plot:
-    #   - y-axis is Parental_ratio (0–1)
+    #   - y-axis is Parental_ratio (0-1)
     #   - variants drawn as colored barplots on the x-axis
     #   - no probability lines/axis; arrow points DOWN to nearest-variant height at predicted peak
     clf.plot_compact_regions_with_variants(mapping_regions=regions, nearest_tol_bp=1000)
@@ -1245,7 +1397,7 @@ def run_pipeline(homo_vcf, ratio_vcf, causal_chr_label, causal_pos,
     if best_chrV:
         statsV = region_uncertainty(preds, best_chrV, B_boot=B_BOOT, block_size=BLOCK_SIZE, n_perm=N_PERM, seed=SEED+7)
 
-    # Bootstrap CI for difference (III − V)
+    # Bootstrap CI for difference (III - V)
     if best_chrIII and best_chrV:
         _ = bootstrap_difference_ci(preds, best_chrIII, best_chrV, B=B_BOOT, block_size=BLOCK_SIZE, seed=SEED+13)
 
@@ -1271,10 +1423,10 @@ clf, PREDICTIONS_DF, REGIONS, CAUSAL, BEST_CHRIII, BEST_CHRV = run_pipeline(
 # =================== Notes ===================
 print("""
 WHAT'S NEW (compact view)
-• Y-axis is Parental ratio (1 − Hawaiian), fixed 0–1.
-• Variants are plotted as vertical bars at their genomic positions:
+- Y-axis is Parental ratio (1 - Hawaiian), fixed 0-1.
+- Variants are plotted as vertical bars at their genomic positions:
     - EMS (G/C->A/T): red bars
     - non-EMS: blue bars
-• Removed region-diagnostic probability lines/axis entirely.
-• 'predicted peak' arrow now points DOWN to the height of the nearest variant bar at the region's peak_center.
+- Removed region-diagnostic probability lines/axis entirely.
+- 'predicted peak' arrow now points DOWN to the height of the nearest variant bar at the region's peak_center.
 """)
