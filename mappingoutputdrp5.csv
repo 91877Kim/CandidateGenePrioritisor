@@ -1,0 +1,16 @@
+CHROM,POS,REF,ALT,QUAL,DP,EMS_label,Hawaiian_ratio,Parental_ratio,Ratio_source,Ratio_nearest_pos,Ratio_nearest_dist_bp,IS_CAUSAL,DIST_TO_CAUSAL_BP
+X,13002360,C,T,30.3,14,EMS (G/C->A/T),0.0,1.0,nearest,13001829.0,531.0,False,nan
+X,13072972,C,T,32.9,16,EMS (G/C->A/T),nan,nan,none,nan,nan,False,nan
+X,13212348,C,T,34.2,16,EMS (G/C->A/T),nan,nan,none,nan,nan,False,nan
+X,13407133,C,T,50.4,16,EMS (G/C->A/T),nan,nan,none,nan,nan,False,nan
+X,13466910,C,T,41.5,8,EMS (G/C->A/T),0.08333333333333333,0.9166666666666666,nearest,13466137.0,773.0,False,nan
+X,13516823,C,T,43.9,10,EMS (G/C->A/T),nan,nan,none,nan,nan,False,nan
+X,13721703,C,T,35.1,15,EMS (G/C->A/T),nan,nan,none,nan,nan,False,nan
+X,13803212,C,T,30.7,11,EMS (G/C->A/T),0.14285714285714285,0.8571428571428572,nearest,13803913.0,701.0,False,nan
+X,13847461,C,T,47.4,10,EMS (G/C->A/T),nan,nan,none,nan,nan,False,nan
+X,13947497,C,T,44.7,17,EMS (G/C->A/T),nan,nan,none,nan,nan,False,nan
+X,14025807,C,T,47.7,12,EMS (G/C->A/T),0.0,1.0,nearest,14025795.0,12.0,False,nan
+X,14187391,C,T,43.8,10,EMS (G/C->A/T),0.0,1.0,nearest,14187420.0,29.0,False,nan
+X,14270078,C,T,41.2,8,EMS (G/C->A/T),0.16666666666666666,0.8333333333333334,nearest,14269649.0,429.0,False,nan
+X,14384957,C,G,4.4,4,non-EMS,0.2727272727272727,0.7272727272727273,nearest,14384699.0,258.0,False,nan
+X,14422850,C,T,47.3,15,EMS (G/C->A/T),0.1111111111111111,0.8888888888888888,nearest,14422620.0,230.0,False,nan
