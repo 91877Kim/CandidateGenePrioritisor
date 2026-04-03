@@ -2,9 +2,11 @@
 """
 Multi-agent variant prioritization with optional mapping-CSV support.
 Same as multi_agent_multiprocessor.py but can load a CloudMap mapping-interval
-variants CSV (e.g. outputs/mapping_interval_X_0_variants.csv) to enrich variants
-with Parental_ratio, Hawaiian_ratio, QUAL, DP, EMS_label, and optionally
-Change_type for scoring, pre-filtering, and LLM input/output.
+variants CSV (e.g. outputs/mapping_interval_X_0_variants.csv).
+When mapping mode is enabled, the mapping table defines the candidate variant set,
+and the main variant CSV supplies rich INFO/ANN annotation fields.
+Matched variants are enriched with Parental_ratio, Hawaiian_ratio, QUAL, DP,
+EMS_label, and optionally Change_type for scoring, pre-filtering, and LLM input/output.
 """
 
 import csv
@@ -60,6 +62,14 @@ OPENAI_SEED = os.getenv("OPENAI_SEED", "")
 OPENAI_TIMEOUT = int(os.getenv("OPENAI_TIMEOUT", "360"))
 OPENAI_MAX_RETRIES = int(os.getenv("OPENAI_MAX_RETRIES", "5"))
 OPENAI_BACKOFF_BASE = float(os.getenv("OPENAI_BACKOFF_BASE", "2.0"))
+DEFAULT_PUBMED_QUERY_AFTER_GENE = "(Mystery cell of male(MCM) OR neuron loss) AND elegans"
+PUBMED_QUERY_AFTER_GENE = (
+    os.getenv("PUBMED_QUERY_AFTER_GENE", "").strip() or DEFAULT_PUBMED_QUERY_AFTER_GENE
+)
+DEFAULT_ANALYSIS_CONTEXT = "Forward-genetics variant prioritization in C. elegans."
+DEFAULT_ANALYSIS_GOAL = "identify variants most likely causal for the user-defined phenotype"
+ANALYSIS_CONTEXT = os.getenv("ANALYSIS_CONTEXT", "").strip() or DEFAULT_ANALYSIS_CONTEXT
+ANALYSIS_GOAL = os.getenv("ANALYSIS_GOAL", "").strip() or DEFAULT_ANALYSIS_GOAL
 
 TOP_K = 30
 RUN_ID = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
@@ -586,7 +596,8 @@ user_annotation_map, annotation_text = load_user_annotations(USER_ANNOTATION_FIL
 use_user_annotation_for_llm = bool(annotation_text.strip())
 
 # =========================
-# Load mapping CSV and build lookup maps (when MAPPING_OUTPUT_PATH set)
+# Load mapping CSV and build lookup maps (when MAPPING_OUTPUT_PATH set).
+# In mapping mode, this table also defines the allowed candidate variant set.
 # =========================
 m_parental_by_pos: Dict[str, Any] = {}
 m_parental_by_vid: Dict[str, Any] = {}
@@ -612,9 +623,11 @@ def _to_map(series_key: pd.Series, series_val: pd.Series) -> Dict[str, Any]:
 
 
 def _map_val(vid: str, pkey: str, by_pos: Dict[str, Any], by_vid: Dict[str, Any]) -> Any:
-    return by_pos.get(pkey, by_vid.get(vid, None))
+    return by_vid.get(vid, by_pos.get(pkey, None))
 
 
+allowed_variant_ids: set[str] = set()
+allowed_pos_keys: set[str] = set()
 if USE_MAPPING:
     mout = pd.read_csv(MAPPING_OUTPUT_PATH)
     mout.columns = [c.strip() for c in mout.columns]
@@ -649,18 +662,35 @@ if USE_MAPPING:
     if "Change_type" in mout.columns:
         m_change_by_pos = _to_map(mout["pos_key"], mout["Change_type"])
         m_change_by_vid = _to_map(mout["variant_id"], mout["Change_type"])
+    allowed_variant_ids = set(mout["variant_id"].dropna().astype(str))
+    allowed_pos_keys = set(mout["pos_key"].dropna().astype(str))
     inter_vid = set(df["variant_id"]).intersection(set(mout["variant_id"]))
     inter_pos = set(df["pos_key"]).intersection(set(mout["pos_key"]))
     print(
-        f"[Mapping] Loaded {len(mout):,} rows from {MAPPING_OUTPUT_PATH}; "
+        f"[Mapping] Main CSV rows={len(df):,}; loaded mapping rows={len(mout):,} from {MAPPING_OUTPUT_PATH}; "
         f"variant_id overlap={len(inter_vid)}, pos_key overlap={len(inter_pos)}"
     )
 
 # =========================
-# Build records from drp1.csv INFO + other columns
+# Build records from main CSV INFO + other columns.
+# In mapping mode, only rows matched to mapping variant_id/pos_key are kept.
 # =========================
 packed_all: List[Dict[str, Any]] = []
+matched_by_variant_id = 0
+matched_by_pos_key_only = 0
+excluded_nonmapped_rows = 0
 for _, row in df.iterrows():
+    vid = row["variant_id"]
+    pkey = row["pos_key"]
+    if USE_MAPPING:
+        if vid in allowed_variant_ids:
+            matched_by_variant_id += 1
+        elif pkey in allowed_pos_keys:
+            matched_by_pos_key_only += 1
+        else:
+            excluded_nonmapped_rows += 1
+            continue
+
     parsed = parse_info_fields(row.get(info_col))
 
     gene = parsed.get("gene", "")
@@ -673,8 +703,6 @@ for _, row in df.iterrows():
     qual = coerce_float(row.get(qual_col)) if qual_col else None
     depth = coerce_float(row.get(dp_col)) if dp_col else None
 
-    vid = row["variant_id"]
-    pkey = row["pos_key"]
     parental_ratio: Any = None
     hawaiian_ratio: Any = None
     ems_label_raw: Any = ""
@@ -731,6 +759,19 @@ for _, row in df.iterrows():
     rec["_severity"] = effect_severity_score(rec["effect"], rec["impact_bucket"])
     packed_all.append(rec)
 
+if USE_MAPPING:
+    matched_total = matched_by_variant_id + matched_by_pos_key_only
+    print(
+        f"[Mapping] Main CSV rows matched mapping table: {matched_total:,} "
+        f"(variant_id={matched_by_variant_id:,}, pos_key_only={matched_by_pos_key_only:,})."
+    )
+    print(f"[Mapping] Excluded {excluded_nonmapped_rows:,} non-mapped main-CSV rows.")
+    if not packed_all:
+        raise ValueError(
+            "Mapping mode is enabled, but zero main-CSV variants matched the mapping table "
+            "by variant_id or pos_key. Check that mapping CSV and main CSV refer to the same variant set."
+        )
+
 
 def tie_break_key(r: Dict[str, Any]) -> Tuple[Any, ...]:
     q = r.get("qual") or 0.0
@@ -754,6 +795,8 @@ print(
     f"Prepared base records for {len(packed_df):,} variants after dedup by most severe effect "
     f"({n_with_gene:,} with non-empty gene name)."
 )
+if USE_MAPPING:
+    print(f"[Mapping] Variants remaining after deduplication: {len(packed_dedup):,}.")
 if n_with_gene < 2 and len(packed_dedup) > 2:
     print(
         "[Warning] Most variants have no gene parsed from INFO. If using a CSV with ANN in INFO, "
@@ -904,7 +947,7 @@ def fetch_gene_knowledge(gene: str) -> Dict[str, Any]:
 
     # PubMed refs
     try:
-        q = f'({gene}) AND (mystery cell of male(MCM) OR neuron) AND elegans'
+        q = f"({gene}) AND {PUBMED_QUERY_AFTER_GENE}"
         params_pm = {
             "db": "pubmed",
             "retmode": "json",
@@ -1174,7 +1217,7 @@ AGENT1_PROMPT = _input(
 ).strip()
 if not AGENT1_PROMPT:
     AGENT1_PROMPT = (
-        "Phenotype: loss of mystery cell of male(MCM) neurons. "
+        "Phenotype: loss of Mystery cell of male(MCM) neurons. "
         "Mechanisms: disrupted cell-fate specification, neuronal differentiation, "
         "axon guidance, survival, or reporter expression."
     )
@@ -1284,18 +1327,17 @@ def try_parse_json(s: str) -> Dict[str, Any]:
 # =========================
 # Prompts
 # =========================
-SYSTEM_PROMPT_MAIN = """You are an expert in C. elegans forward genetics and mystery cell of male(MCM) neuron fate.
-
-Context:
-- Screen detects loss of mystery cell of male(MCM) neurons via a GFP reporter.
-- Goal: identify variants most likely to cause MCM loss.
-
-Evidence you may use:
-- Structured fields from the csv file: Gene_name, Effect, impact_bucket,  QUAL, DP, SIFT/PolyPhen.
-- NCBI publications: provided PubMed links.
-- WormBase context when available: WB_Overview and MANUAL_DESCRIPTION_WB.
-- Agent1 distilled mechanisms per gene when available (gene_knowledge.distilled_mechanism).
-""" + (
+SYSTEM_PROMPT_MAIN = (
+    "You are an expert in C. elegans forward genetics and variant prioritization.\n\n"
+    "Context:\n"
+    f"- {ANALYSIS_CONTEXT}\n"
+    f"- Goal: {ANALYSIS_GOAL}\n\n"
+    "Evidence you may use:\n"
+    "- Structured fields from the csv file: Gene_name, Effect, impact_bucket,  QUAL, DP, SIFT/PolyPhen.\n"
+    "- NCBI publications: provided PubMed links.\n"
+    "- WormBase context when available: WB_Overview and MANUAL_DESCRIPTION_WB.\n"
+    "- Agent1 distilled mechanisms per gene when available (gene_knowledge.distilled_mechanism).\n"
+) + (
     "\n- Mapping data when provided: Parental_ratio (linkage proxy), EMS_label (EMS mutagen), protein_change/Change_type; higher Parental_ratio increases likelihood; EMS increases prior.\n"
     if USE_MAPPING
     else ""
@@ -1310,7 +1352,9 @@ Instructions:
 - In the narrative, cite evidence in brackets, e.g., [Effect=stop_gained; impact=HIGH; QUAL=83.1; GeneRef: PMID 12345].
 - When a distilled mechanism is available for the gene, also include it explicitly in the bracketed evidence as distilled_mechanism="...".
 - When WB_Overview or MANUAL_DESCRIPTION_WB text is available, explicitly cite it in the bracketed evidence as WB_Overview="..." and/or MANUAL_DESCRIPTION_WB="..." (shortened as needed).
+- When Parental_ratio and/or EMS_label are available, explicitly cite them in the bracketed evidence as Parental_ratio=..., EMS_label=True/False(if EMS_label is not available/empty, then it is False).
 - Prefer HIGH-impact (nonsense/frameshift/essential splice) > damaging missense > low/unknown.
+- When Parental_ratio is available as a numeric value, higher values provide stronger mapping support and should modestly increase priority. If Parental_ratio is missing/empty, treat it as unknown local mapping support, not as zero and not as evidence against causality. A true numeric Parental_ratio = 0 is valid evidence of weak linkage and may reduce priority EMS_label=True provides a weak prior in favor of causality, but should not outweigh stronger functional, mechanistic, or literature-based evidence.
 - Do not fabricate references; only cite provided PubMed links.
 - Output JSON only; no chain-of-thought."""
 
@@ -1367,6 +1411,7 @@ def format_variant_for_llm(r: Dict[str, Any]) -> Dict[str, Any]:
 
 # pref is already one representative variant per gene (from gene_best_map); no duplicate genes sent to LLM
 variants_for_llm = [format_variant_for_llm(r) for r in pref]
+variant_for_llm_by_id = {v["variant_id"]: v for v in variants_for_llm}
 
 
 def format_pubmed_refs(pubmed_refs: List[Dict[str, str]]) -> str:
@@ -1404,14 +1449,14 @@ variant_agent1_publication_comments_map = {
 }
 
 USER_PROMPT_MAIN = {
-    "task": "Prioritize variants for mystery cell of male(MCM) neuron loss and annotate each with a narrative + confidence.",
+    "task": f"Prioritize variants and annotate each with a narrative + confidence for this goal: {ANALYSIS_GOAL}",
     "instructions": {
         "ranking_size": min(TOP_K, len(variants_for_llm)),
         "ranking_unit": "genes",
         "must_return_exact_ranking_size": True,
         "return_all_ranked": True,
         "notes": [
-            "Use drp1.csv structured fields and provided NCBI PubMed refs.",
+            "Use the structured fields in the provided csv file and provided NCBI PubMed refs.",
             "Use WormBase context (WB_Overview/MANUAL_DESCRIPTION_WB) when available.",
             "Narratives 2-3 sentences with bracketed evidence and PMID citations when available.",
             "Input is one variant per gene; return exactly ranking_size entries in ranking, one entry per gene (no duplicate genes).",
@@ -1495,10 +1540,14 @@ def single_shot_call() -> Optional[LLMVariantOutput]:
     return LLMVariantOutput(**parsed)
 
 
-NARR_SYSTEM = """You are an expert in C. elegans mystery cell of male(MCM) neuron biology.
-For each variant, write a 2-3 sentence narrative using provided fields, NCBI refs, and WormBase context if present.
-Cite evidence in brackets, e.g., [Effect=missense; impact=MODERATE; GeneRef: PMID 12345]. When WB_Overview or MANUAL_DESCRIPTION_WB text is available, explicitly cite it in the bracketed evidence as WB_Overview="..." and/or MANUAL_DESCRIPTION_WB="..." (shortened as needed).
-Return JSON: {"annotations":[{"variant_id":"string","gene":"string","narrative":"string","narrative_confidence":0.0}]}"""
+NARR_SYSTEM = (
+    "You are an expert in C. elegans forward genetics and variant interpretation.\n"
+    f"Context: {ANALYSIS_CONTEXT}\n"
+    f"Goal: {ANALYSIS_GOAL}\n"
+    "For each variant, write a 2-3 sentence narrative using provided fields, NCBI refs, and WormBase context if present.\n"
+    'Cite evidence in brackets, e.g., [Effect=missense; impact=MODERATE; GeneRef: PMID 12345]. When WB_Overview or MANUAL_DESCRIPTION_WB text is available, explicitly cite it in the bracketed evidence as WB_Overview=\"...\" and/or MANUAL_DESCRIPTION_WB=\"...\" (shortened as needed).\n'
+    'Return JSON: {"annotations":[{"variant_id":"string","gene":"string","narrative":"string","narrative_confidence":0.0}]}'
+)
 
 
 def llm_narrative_chunk(chunk: List[Dict[str, Any]]) -> Dict[str, Tuple[str, float]]:
@@ -1549,11 +1598,14 @@ def llm_narratives_in_chunks(items: List[Dict[str, Any]], chunk_size: int = 18) 
     return out
 
 
-RANK_SYSTEM = """Rank genes for causing mystery cell of male(MCM) neuron loss using provided summaries.
-The variant_summaries list is already one entry per gene (deduplicated). Return exactly top_k ranking entries, each with a different gene; use the variant_id from the summary for that gene.
-Heuristics: HIGH-impact > damaging missense > low/unknown; integrate NCBI refs, WormBase context (WB_Overview and MANUAL_DESCRIPTION_WB), and narrative confidence.
-Within each ranking item, set rationale to a single concise sentence summarizing why this gene/variant is ranked at that position, without square brackets or inline evidence lists; place detailed evidence and citations into the key_evidence bullet strings instead.
-Output JSON only with fields: summary, most_likely, ranking[]."""
+RANK_SYSTEM = (
+    f"Rank genes by likelihood of causality for this goal: {ANALYSIS_GOAL}\n"
+    f"Context: {ANALYSIS_CONTEXT}\n"
+    "The variant_summaries list is already one entry per gene (deduplicated). Return exactly top_k ranking entries, each with a different gene; use the variant_id from the summary for that gene.\n"
+    "Heuristics: HIGH-impact > damaging missense > low/unknown; integrate NCBI refs, WormBase context (WB_Overview and MANUAL_DESCRIPTION_WB), and narrative confidence.\n"
+    "Within each ranking item, set rationale to a single concise sentence summarizing why this gene/variant is ranked at that position, without square brackets or inline evidence lists; place detailed evidence and citations into the key_evidence bullet strings instead.\n"
+    "Output JSON only with fields: summary, most_likely, ranking[]."
+)
 
 
 def llm_ranking_from_summaries(
@@ -1564,7 +1616,7 @@ def llm_ranking_from_summaries(
 ) -> LLMRankingOnly:
     top_k = min(required_top_k or TOP_K, len(summaries))
     user = {
-        "task": "Rank all candidate genes by likelihood of causing mystery cell of male(MCM) neuron loss. Input is one summary per gene (already deduplicated). Return exactly top_k ranking entries, one per gene, using the variant_id from each summary.",
+        "task": f"Rank all candidate genes by likelihood of causality for this goal: {ANALYSIS_GOAL}. Input is one summary per gene (already deduplicated). Return exactly top_k ranking entries, one per gene, using the variant_id from each summary.",
         "top_k": top_k,
         "ranking_unit": "genes",
         "must_return_exact_top_k": True,
@@ -1699,7 +1751,7 @@ def dedupe_rank_rows_by_gene(
         seen_gene_keys.add(gkey)
 
         row["gene"] = gene
-        if not row.get("Narrative"):
+        if not str(row.get("Narrative") or "").strip():
             narrative, narr_conf = narr_map.get(vid, ("", 0.0))
             row["Narrative"] = narrative
             row["Narrative_confidence"] = round(float(narr_conf), 2) if narrative else None
@@ -1710,6 +1762,77 @@ def dedupe_rank_rows_by_gene(
         return pd.DataFrame()
     out["rank"] = range(1, len(out) + 1)
     return out
+
+
+def backfill_missing_narratives_for_ranked(
+    rank_df: pd.DataFrame,
+    narr_map: Dict[str, Tuple[str, float]],
+    variant_payload_by_id: Dict[str, Dict[str, Any]],
+) -> Tuple[pd.DataFrame, Dict[str, Tuple[str, float]]]:
+    if rank_df is None or rank_df.empty:
+        return rank_df, narr_map
+
+    out = rank_df.copy()
+    ranked_ids: List[str] = []
+    seen_ids: set[str] = set()
+    for value in out.get("variant_id", []):
+        vid = str(value or "").strip()
+        if not vid or vid in seen_ids:
+            continue
+        seen_ids.add(vid)
+        ranked_ids.append(vid)
+
+    missing_ids = [
+        vid
+        for vid in ranked_ids
+        if not str(narr_map.get(vid, ("", 0.0))[0] or "").strip()
+    ]
+    if not missing_ids:
+        return out, narr_map
+
+    payload = [variant_payload_by_id[vid] for vid in missing_ids if vid in variant_payload_by_id]
+    if payload:
+        print(
+            f"[Narrative backfill] Missing narratives for {len(missing_ids)} ranked variants; "
+            f"regenerating {len(payload)}.",
+            flush=True,
+        )
+        recovered = llm_narratives_in_chunks(payload, chunk_size=12)
+        if recovered:
+            narr_map.update(recovered)
+    else:
+        print(
+            f"[Narrative backfill] {len(missing_ids)} ranked variants were missing narratives, "
+            "but no matching payload was found.",
+            flush=True,
+        )
+        return out, narr_map
+
+    if "Narrative" not in out.columns:
+        out["Narrative"] = ""
+    if "Narrative_confidence" not in out.columns:
+        out["Narrative_confidence"] = None
+
+    filled_rows = 0
+    for idx, row in out.iterrows():
+        vid = str(row.get("variant_id") or "").strip()
+        if not vid:
+            continue
+        current = str(row.get("Narrative") or "").strip()
+        narrative, narr_conf = narr_map.get(vid, ("", 0.0))
+        if not current and str(narrative or "").strip():
+            out.at[idx, "Narrative"] = narrative
+            out.at[idx, "Narrative_confidence"] = round(float(narr_conf), 2)
+            filled_rows += 1
+
+    still_missing = sum(
+        1 for vid in ranked_ids if not str(narr_map.get(vid, ("", 0.0))[0] or "").strip()
+    )
+    print(
+        f"[Narrative backfill] Filled {filled_rows} rows; still missing {still_missing}.",
+        flush=True,
+    )
+    return out, narr_map
 
 
 def rerank_exact_top_k_from_summaries(
@@ -1880,6 +2003,7 @@ for shot_idx in range(1, NUM_LLM_RUNS + 1):
         rank_df, narr_map = chunked_fallback_pipeline()
 
     rank_df = dedupe_rank_rows_by_gene(rank_df, candidate_by_variant, narr_map)
+    rank_df, narr_map = backfill_missing_narratives_for_ranked(rank_df, narr_map, variant_for_llm_by_id)
     required_k = min(TOP_K, len(variants_for_llm))
     if len(rank_df) < required_k:
         print(
@@ -1894,6 +2018,7 @@ for shot_idx in range(1, NUM_LLM_RUNS + 1):
             candidate_by_variant=candidate_by_variant,
             top_k=required_k,
         )
+        rank_df, narr_map = backfill_missing_narratives_for_ranked(rank_df, narr_map, variant_for_llm_by_id)
 
     rank_df = enforce_probability_ranking(rank_df)
     rank_df["user_annotation"] = rank_df["variant_id"].map(user_annotation_map_by_variant).fillna("no annotation")
@@ -1930,7 +2055,7 @@ for shot_idx in range(1, NUM_LLM_RUNS + 1):
         idx_after_depth = view_cols.index("depth") + 1
         view_cols = (
             view_cols[:idx_after_depth]
-            + ["parental_ratio", "ems_label_raw", "protein_change"]
+            + ["parental_ratio", "ems_label_raw"]
             + view_cols[idx_after_depth:]
         )
     final_df = final_df[[c for c in view_cols if c in final_df.columns]]

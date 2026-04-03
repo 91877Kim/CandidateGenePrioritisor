@@ -1,2 +1,3 @@
-drp5_hom_mutant_variants_hu80format.vcf
-drp5_HA_SNP_positions_hu80format.vcf
+C:\Users\Kim_c\Desktop\LLM_prioritising\Rich\drp5_hom_mutant_variants_hu80format.vcf
+C:\Users\Kim_c\Desktop\LLM_prioritising\Rich\drp5_HA_SNP_positions_hu80format.vcf
+X

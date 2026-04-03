@@ -69,11 +69,14 @@ _base = _script_dir.parent
 HOMO_VCF = str(_base / "drp5_hom_mutant_variants_hu80format.vcf")
 RATIO_VCF = str(_base / "drp5_HA_SNP_positions_hu80format.vcf")
 _mapping_input = _script_dir / "mapping_input.txt"
+TARGET_CHROM_RAW = ""  # Optional third line: e.g. X / III / chrX
 if _mapping_input.exists():
     with open(_mapping_input) as _f:
         _lines = [ln.strip() for ln in _f if ln.strip() and not ln.strip().startswith("#")]
     if len(_lines) >= 2:
         HOMO_VCF, RATIO_VCF = _lines[0], _lines[1]
+    if len(_lines) >= 3:
+        TARGET_CHROM_RAW = _lines[2]
 
 # =================== Causal variant (UPDATED) ===================
 CAUSAL_CHR_LABEL = "chrIII"
@@ -1351,6 +1354,18 @@ def run_pipeline(homo_vcf, ratio_vcf, causal_chr_label, causal_pos,
     else:
         print("\nNo chrV mapping interval found.")
 
+    best_target = None
+    target_chr_norm = None
+    if TARGET_CHROM_RAW:
+        target_chr_norm = normalize_chr(TARGET_CHROM_RAW)
+        best_target = pick_chr_region_by_coords_or_top(regions, target_chr_norm)
+        if best_target:
+            print(f"\nTarget chromosome interval (from mapping_input.txt): Chr {best_target['chrom']} "
+                  f"{best_target['start']:,}-{best_target['end']:,} "
+                  f"(conf={best_target['confidence']:.3f}, size={best_target['size']/1e6:.3f} Mb)")
+        else:
+            print(f"\nNo mapping interval found for requested target chromosome: {target_chr_norm}")
+
     # Diagnostics + variant tables
     if best_chrIII:
         clf.describe_region(preds, best_chrIII, flank_bp=250_000)
@@ -1376,6 +1391,21 @@ def run_pipeline(homo_vcf, ratio_vcf, causal_chr_label, causal_pos,
             nearest_tol_bp=1000,
             causal_chr_label=None,
             causal_pos=None
+        )
+
+    # If the user requested a specific chromosome via mapping_input.txt (3rd line),
+    # always output the mapping-interval variant table for that chromosome too.
+    if best_target and target_chr_norm:
+        clf.describe_region(preds, best_target, flank_bp=250_000)
+        causal_chr_norm = normalize_chr(CAUSAL_CHR_LABEL)
+        causal_label_for_table = CAUSAL_CHR_LABEL if target_chr_norm == causal_chr_norm else None
+        causal_pos_for_table = CAUSAL_POS if target_chr_norm == causal_chr_norm else None
+        _ = clf.variants_in_interval_table(
+            best_target,
+            save_prefix=f"{HOME_DIR}/outputs/mapping_interval_{target_chr_norm}_0",
+            nearest_tol_bp=1000,
+            causal_chr_label=causal_label_for_table,
+            causal_pos=causal_pos_for_table,
         )
 
     # Standard genome plot (probabilities)

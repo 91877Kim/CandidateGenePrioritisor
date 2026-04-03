@@ -14,12 +14,20 @@ Reads prioritising_input.txt for:
   - Line 5: Optional user annotation CSV filename in script directory.
   - Line 6: Agent1 prompt (literature evaluation; phenotype + mechanisms).
   - Line 7: Agent2 prompt (reasoning / synthesis for the gene set).
-  - Line 8: How many LLM runs on this gene set (integer).
+  - Line 8: PubMed query suffix used after "({gene}) AND " for NCBI search.
+  - Line 9: Analysis context for ranking/narrative prompts.
+  - Line 10: Analysis goal for ranking/narrative prompts.
+  - Line 11: How many LLM runs on this gene set (integer).
+  - Line 12: Optional mapping target chromosome identifier (e.g. X, III, chrX).
+   If provided and mapping runs, this is forwarded to `mapping_code.py` so it
+   generates a mapping interval table for that chromosome.
 
-Lines 4–8 are always required; lines 1–3 are only required when using mapping.
+Lines 4–11 are always required; line 12 is optional; lines 1–3 are only required
+when using mapping.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -49,14 +57,16 @@ def read_prioritising_lines() -> list[str]:
 
 def main():
     lines = read_prioritising_lines()
-    if len(lines) < 8:
+    if len(lines) < 11:
         print(
-            "Error: prioritising_input.txt must have at least 8 non-comment lines.",
+            "Error: prioritising_input.txt must have at least 11 non-comment lines.",
             file=sys.stderr,
         )
         print(
             "  Lines 1–3: mapping inputs (optional); 4: variant CSV path; "
-            "5: annotation CSV; 6: Agent1 prompt; 7: Agent2 prompt; 8: LLM run count.",
+            "5: annotation CSV; 6: Agent1 prompt; 7: Agent2 prompt; "
+            "8: PubMed query suffix; 9: analysis context; "
+            "10: analysis goal; 11: LLM run count.",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -68,7 +78,11 @@ def main():
     annotation_csv = lines[4].strip() if len(lines) > 4 else ""
     agent1_prompt = lines[5].strip() if len(lines) > 5 else ""
     agent2_prompt = lines[6].strip() if len(lines) > 6 else ""
-    run_count = lines[7].strip() if len(lines) > 7 else "1"
+    pubmed_query_suffix = lines[7].strip() if len(lines) > 7 else ""
+    analysis_context = lines[8].strip() if len(lines) > 8 else ""
+    analysis_goal = lines[9].strip() if len(lines) > 9 else ""
+    run_count = lines[10].strip() if len(lines) > 10 else "1"
+    mapping_target_chr = lines[11].strip() if len(lines) > 11 else ""
 
     # Build stdin tail for multi_agent_with_mapping:
     #   1) variant CSV path
@@ -124,6 +138,9 @@ def main():
         with open(MAPPING_INPUT, "w", encoding="utf-8") as f:
             f.write(homo_vcf + "\n")
             f.write(ratio_vcf + "\n")
+            # Optional target chromosome forwarded to mapping_code.py
+            # (e.g. X, III, chrX). If empty, mapping_code keeps defaults.
+            f.write((mapping_target_chr or "").strip() + "\n")
         print(f"Running mapping: {RUN_CLOUDMAP}")
         result = subprocess.run(
             [sys.executable, str(RUN_CLOUDMAP)],
@@ -134,23 +151,31 @@ def main():
             sys.exit(result.returncode)
         # Find generated variant table (e.g. outputs/mapping_interval_chrIII_variants.csv)
         OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
-        generated = sorted(OUTPUTS_DIR.glob("mapping_interval_*_variants.csv"))
+        generated = list(OUTPUTS_DIR.glob("mapping_interval_*_variants.csv"))
+        # If multiple mapping tables exist from prior runs, pick the newest one.
+        generated.sort(key=lambda p: p.stat().st_mtime, reverse=True)
         if not generated:
             print("Error: No mapping_interval_*_variants.csv found in outputs/ after mapping.", file=sys.stderr)
             sys.exit(1)
         mapping_path_for_agent = str(generated[0])
         print(f"Using generated mapping table: {mapping_path_for_agent}")
 
-    # Build stdin for multi_agent_with_mapping: first line = mapping path, then lines 4–9 from file
+    # Build stdin for multi_agent_with_mapping: first line = mapping path,
+    # then variant/annotation/prompts/run-count inputs expected by that script.
     stdin_lines = [mapping_path_for_agent] + multi_agent_tail
     stdin_text = "\n".join(stdin_lines) + "\n"
 
     print(f"Running {MULTI_AGENT_SCRIPT}")
+    child_env = os.environ.copy()
+    child_env["PUBMED_QUERY_AFTER_GENE"] = pubmed_query_suffix
+    child_env["ANALYSIS_CONTEXT"] = analysis_context
+    child_env["ANALYSIS_GOAL"] = analysis_goal
     result = subprocess.run(
         [sys.executable, str(MULTI_AGENT_SCRIPT)],
         cwd=str(SCRIPT_DIR),
         input=stdin_text,
         encoding="utf-8",
+        env=child_env,
     )
     sys.exit(result.returncode)
 

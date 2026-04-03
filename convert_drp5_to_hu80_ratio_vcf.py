@@ -1,16 +1,25 @@
 #!/usr/bin/env python3
 """
-Convert drp5_HA_SNP_positions_for_cloudmap.vcf (freeBayes) to hu80-style ratio VCF
-so mapping_code.py can use it. Output: GT:AD:DP:GQ:PL FORMAT; headers describe acronyms.
-Uses only standard library (no cyvcf2 required).
+Convert a FreeBayes-style DRP5 SNP VCF to a hu80-style allele-ratio VCF for
+`mapping_code.py`.
+
+Output FORMAT layout:
+  GT:AD:DP:GQ:PL
+
+The script uses only the standard library (no cyvcf2 required).
 """
-import sys
+
+import argparse
 import re
 from pathlib import Path
 
+import sys
+
 SCRIPT_DIR = Path(__file__).resolve().parent
-DRP5_VCF = SCRIPT_DIR / "drp5_HA_SNP_positions_for_cloudmap.vcf"
-OUT_VCF = SCRIPT_DIR / "drp5_HA_SNP_positions_hu80format.vcf"
+
+# Common defaults in this repo. Note the input filename contains a space.
+DEFAULT_INPUT_VCF = SCRIPT_DIR / "drp5 SNP.vcf"
+DEFAULT_OUTPUT_VCF = SCRIPT_DIR / "drp5_HA_SNP_positions_hu80format.vcf"
 
 # hu80-style header: FORMAT/INFO descriptions so acronyms are documented
 HU80_HEADER = """##fileformat=VCFv4.1
@@ -56,17 +65,47 @@ def gl_to_pl(gl_str):
         return "0,0,0"
 
 
-def main():
-    if not DRP5_VCF.exists():
-        print(f"Not found: {DRP5_VCF}", file=sys.stderr)
+def main(argv=None):
+    parser = argparse.ArgumentParser(
+        description="Convert drp5 VCF to hu80 ratio VCF for mapping_code.py."
+    )
+    parser.add_argument(
+        "-i",
+        "--input",
+        type=str,
+        default=str(DEFAULT_INPUT_VCF),
+        help=f"Input VCF (default: {DEFAULT_INPUT_VCF})",
+    )
+    parser.add_argument(
+        "-o",
+        "--output",
+        type=str,
+        default=str(DEFAULT_OUTPUT_VCF),
+        help=f"Output VCF (default: {DEFAULT_OUTPUT_VCF})",
+    )
+    parser.add_argument(
+        "--keep-zero-count",
+        action="store_true",
+        help=(
+            "Keep variants where both ref and alt counts are 0 "
+            '(i.e. AD=0,0 / RO=0 & AO=0). By default, these records are dropped.'
+        ),
+    )
+    args = parser.parse_args(argv)
+
+    input_vcf = Path(args.input)
+    output_vcf = Path(args.output)
+
+    if not input_vcf.exists():
+        print(f"Not found: {input_vcf}", file=sys.stderr)
         sys.exit(1)
 
     format_keys = None
     sample_name = "SAMPLE"
     n_written = 0
 
-    with open(DRP5_VCF, "r", encoding="utf-8", errors="replace") as fin, open(
-        OUT_VCF, "w", encoding="utf-8"
+    with open(input_vcf, "r", encoding="utf-8", errors="replace") as fin, open(
+        output_vcf, "w", encoding="utf-8"
     ) as out:
         out.write(HU80_HEADER.strip())
         out.write("\n")
@@ -128,9 +167,14 @@ def main():
                 except ValueError:
                     pass
             if ref_c == 0 and alt_c == 0:
-                continue
+                if not args.keep_zero_count:
+                    continue
+                dp = 0
+                # Still emit a record, but note: mapping_code may skip it later
+                # (depending on how it parses ratios/depth).
+            else:
+                dp = ref_c + alt_c
 
-            dp = ref_c + alt_c
             if dp_str:
                 try:
                     dp = int(dp_str)
@@ -167,7 +211,7 @@ def main():
             )
             n_written += 1
 
-    print(f"Wrote {n_written} variants to {OUT_VCF}")
+    print(f"Wrote {n_written} variants to {output_vcf}")
 
 
 if __name__ == "__main__":
