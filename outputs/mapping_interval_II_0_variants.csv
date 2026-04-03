@@ -1,0 +1,106 @@
+CHROM,POS,REF,ALT,QUAL,DP,EMS_label,Hawaiian_ratio,Parental_ratio,Ratio_source,Ratio_nearest_pos,Ratio_nearest_dist_bp,IS_CAUSAL,DIST_TO_CAUSAL_BP
+II,13714233,A,T,495.17,17,non-EMS,nan,nan,none,nan,nan,False,nan
+II,13733807,C,T,115.2,5,EMS (G/C->A/T),nan,nan,none,nan,nan,False,nan
+II,13743356,T,A,86.55,4,non-EMS,nan,nan,none,nan,nan,False,nan
+II,13747366,C,T,45.91,2,EMS (G/C->A/T),nan,nan,none,nan,nan,False,nan
+II,13747369,T,C,45.91,2,non-EMS,nan,nan,none,nan,nan,False,nan
+II,13749076,G,A,202.88,6,EMS (G/C->A/T),nan,nan,none,nan,nan,False,nan
+II,13750962,C,T,43.53,2,EMS (G/C->A/T),nan,nan,none,nan,nan,False,nan
+II,13758701,A,C,85.17,3,non-EMS,nan,nan,none,nan,nan,False,nan
+II,13759212,A,T,118.49,4,non-EMS,nan,nan,none,nan,nan,False,nan
+II,13780288,G,A,473.02,16,EMS (G/C->A/T),nan,nan,none,nan,nan,False,nan
+II,13780299,G,A,455.02,16,EMS (G/C->A/T),nan,nan,none,nan,nan,False,nan
+II,13780318,G,T,533.97,15,non-EMS,nan,nan,none,nan,nan,False,nan
+II,13796631,G,A,45.13,2,EMS (G/C->A/T),nan,nan,none,nan,nan,False,nan
+II,13796643,G,A,80.5,3,EMS (G/C->A/T),nan,nan,none,nan,nan,False,nan
+II,13796648,A,G,82.92,3,non-EMS,nan,nan,none,nan,nan,False,nan
+II,13796650,G,T,118.66,4,non-EMS,nan,nan,none,nan,nan,False,nan
+II,13802549,A,T,40.99,2,non-EMS,nan,nan,none,nan,nan,False,nan
+II,13810837,G,A,557.12,17,EMS (G/C->A/T),nan,nan,none,nan,nan,False,nan
+II,13812145,T,A,122.3,4,non-EMS,nan,nan,none,nan,nan,False,nan
+II,13812147,T,A,48.77,3,non-EMS,nan,nan,none,nan,nan,False,nan
+II,13815146,A,T,381.92,13,non-EMS,nan,nan,none,nan,nan,False,nan
+II,13834730,C,A,716.97,21,non-EMS,nan,nan,none,nan,nan,False,nan
+II,13834731,T,A,672.2,20,non-EMS,nan,nan,none,nan,nan,False,nan
+II,13835944,A,T,154.27,6,non-EMS,nan,nan,none,nan,nan,False,nan
+II,13851056,G,A,42.59,2,EMS (G/C->A/T),nan,nan,none,nan,nan,False,nan
+II,13853994,A,T,545.95,17,non-EMS,nan,nan,none,nan,nan,False,nan
+II,13860519,A,C,45.87,2,non-EMS,nan,nan,none,nan,nan,False,nan
+II,13860521,C,T,85.77,3,EMS (G/C->A/T),nan,nan,none,nan,nan,False,nan
+II,13877359,A,T,598.3,17,non-EMS,nan,nan,none,nan,nan,False,nan
+II,13880413,T,A,317.33,10,non-EMS,nan,nan,none,nan,nan,False,nan
+II,13881776,C,T,280.2,8,EMS (G/C->A/T),nan,nan,none,nan,nan,False,nan
+II,13882346,A,T,205.74,6,non-EMS,nan,nan,none,nan,nan,False,nan
+II,13882347,A,T,167.29,5,non-EMS,nan,nan,none,nan,nan,False,nan
+II,13882348,A,T,165.86,5,non-EMS,nan,nan,none,nan,nan,False,nan
+II,13893620,A,T,161.57,5,non-EMS,nan,nan,none,nan,nan,False,nan
+II,13893621,A,T,199.55,6,non-EMS,nan,nan,none,nan,nan,False,nan
+II,13914218,T,C,383.87,13,non-EMS,nan,nan,none,nan,nan,False,nan
+II,13928874,T,C,396.3,14,non-EMS,nan,nan,none,nan,nan,False,nan
+II,13934109,C,T,341.47,14,EMS (G/C->A/T),nan,nan,none,nan,nan,False,nan
+II,13936063,A,C,416.92,12,non-EMS,nan,nan,none,nan,nan,False,nan
+II,13937072,C,T,46.56,2,EMS (G/C->A/T),nan,nan,none,nan,nan,False,nan
+II,13946749,G,A,75.07,4,EMS (G/C->A/T),nan,nan,none,nan,nan,False,nan
+II,13946752,T,A,108.32,4,non-EMS,nan,nan,none,nan,nan,False,nan
+II,13946813,T,A,42.68,2,non-EMS,nan,nan,none,nan,nan,False,nan
+II,13953868,C,A,565.73,17,non-EMS,nan,nan,none,nan,nan,False,nan
+II,13985471,G,T,321.41,9,non-EMS,0.06666666666666667,0.9333333333333333,nearest,13985298.0,173.0,False,nan
+II,14009098,G,C,40.99,2,non-EMS,nan,nan,none,nan,nan,False,nan
+II,14010171,A,T,42.68,3,non-EMS,nan,nan,none,nan,nan,False,nan
+II,14010172,G,A,113.61,4,EMS (G/C->A/T),nan,nan,none,nan,nan,False,nan
+II,14015798,T,G,81.25,3,non-EMS,nan,nan,none,nan,nan,False,nan
+II,14015819,C,T,42.68,2,EMS (G/C->A/T),nan,nan,none,nan,nan,False,nan
+II,14017944,T,A,463.82,15,non-EMS,nan,nan,none,nan,nan,False,nan
+II,14019968,A,G,121.35,4,non-EMS,nan,nan,none,nan,nan,False,nan
+II,14020961,T,G,624.6,19,non-EMS,nan,nan,none,nan,nan,False,nan
+II,14023456,G,T,45.13,2,non-EMS,nan,nan,none,nan,nan,False,nan
+II,14023457,A,T,45.91,2,non-EMS,nan,nan,none,nan,nan,False,nan
+II,14023458,A,G,45.91,2,non-EMS,nan,nan,none,nan,nan,False,nan
+II,14023460,A,T,45.91,2,non-EMS,nan,nan,none,nan,nan,False,nan
+II,14024280,A,T,44.35,2,non-EMS,nan,nan,none,nan,nan,False,nan
+II,14026592,G,C,509.94,15,non-EMS,nan,nan,none,nan,nan,False,nan
+II,14027166,A,G,626.23,18,non-EMS,nan,nan,none,nan,nan,False,nan
+II,14027274,A,G,755.79,22,non-EMS,nan,nan,none,nan,nan,False,nan
+II,14027410,A,C,609.93,18,non-EMS,nan,nan,none,nan,nan,False,nan
+II,14027752,C,A,397.86,11,non-EMS,nan,nan,none,nan,nan,False,nan
+II,14029841,T,A,198.23,6,non-EMS,nan,nan,none,nan,nan,False,nan
+II,14030046,T,A,196.17,6,non-EMS,nan,nan,none,nan,nan,False,nan
+II,14032874,A,T,378.72,13,non-EMS,nan,nan,none,nan,nan,False,nan
+II,14033019,A,G,156.65,5,non-EMS,nan,nan,none,nan,nan,False,nan
+II,14033036,C,A,274.3,8,non-EMS,nan,nan,none,nan,nan,False,nan
+II,14033051,G,A,328.23,10,EMS (G/C->A/T),nan,nan,none,nan,nan,False,nan
+II,14033202,A,G,838.09,23,non-EMS,nan,nan,none,nan,nan,False,nan
+II,14033203,A,T,809.65,24,non-EMS,nan,nan,none,nan,nan,False,nan
+II,14033505,G,A,634.58,17,EMS (G/C->A/T),nan,nan,none,nan,nan,False,nan
+II,14033516,T,A,577.53,17,non-EMS,nan,nan,none,nan,nan,False,nan
+II,14034396,G,A,83.23,3,EMS (G/C->A/T),nan,nan,none,nan,nan,False,nan
+II,14034428,A,C,126.1,5,non-EMS,nan,nan,none,nan,nan,False,nan
+II,14035645,T,C,442.75,15,non-EMS,1.0,0.0,nearest,14036358.0,713.0,False,nan
+II,14035660,G,A,411.27,13,EMS (G/C->A/T),1.0,0.0,nearest,14036358.0,698.0,False,nan
+II,14036381,A,C,347.89,10,non-EMS,1.0,0.0,nearest,14036358.0,23.0,False,nan
+II,14036533,C,A,175.17,7,non-EMS,1.0,0.0,nearest,14036358.0,175.0,False,nan
+II,14036630,T,C,515.68,14,non-EMS,1.0,0.0,nearest,14036358.0,272.0,False,nan
+II,14036776,C,T,642.84,18,EMS (G/C->A/T),1.0,0.0,nearest,14036358.0,418.0,False,nan
+II,14036790,G,T,648.43,19,non-EMS,1.0,0.0,nearest,14036358.0,432.0,False,nan
+II,14036867,T,C,357.25,12,non-EMS,1.0,0.0,nearest,14036358.0,509.0,False,nan
+II,14037329,G,A,309.82,9,EMS (G/C->A/T),1.0,0.0,nearest,14036358.0,971.0,False,nan
+II,14038683,C,G,312.37,9,non-EMS,nan,nan,none,nan,nan,False,nan
+II,14049732,A,T,43.12,2,non-EMS,nan,nan,none,nan,nan,False,nan
+II,14062877,C,T,467.44,13,EMS (G/C->A/T),nan,nan,none,nan,nan,False,nan
+II,14067215,G,T,474.87,15,non-EMS,nan,nan,none,nan,nan,False,nan
+II,14075960,T,A,42.59,2,non-EMS,nan,nan,none,nan,nan,False,nan
+II,14079166,C,T,45.13,2,EMS (G/C->A/T),nan,nan,none,nan,nan,False,nan
+II,14079700,T,C,405.33,14,non-EMS,nan,nan,none,nan,nan,False,nan
+II,14079878,G,C,448.29,13,non-EMS,nan,nan,none,nan,nan,False,nan
+II,14083690,A,T,124.67,4,non-EMS,nan,nan,none,nan,nan,False,nan
+II,14094871,G,A,45.91,2,EMS (G/C->A/T),nan,nan,none,nan,nan,False,nan
+II,14094900,G,A,45.13,2,EMS (G/C->A/T),nan,nan,none,nan,nan,False,nan
+II,14099053,G,A,653.24,21,EMS (G/C->A/T),nan,nan,none,nan,nan,False,nan
+II,14130987,A,G,80.2,4,non-EMS,nan,nan,none,nan,nan,False,nan
+II,14130992,C,A,77.91,3,non-EMS,nan,nan,none,nan,nan,False,nan
+II,14131020,C,G,41.81,3,non-EMS,nan,nan,none,nan,nan,False,nan
+II,14131023,G,C,48.77,3,non-EMS,nan,nan,none,nan,nan,False,nan
+II,14134681,A,C,1193.51,36,non-EMS,nan,nan,none,nan,nan,False,nan
+II,14135560,C,T,9.15,1,EMS (G/C->A/T),nan,nan,none,nan,nan,False,nan
+II,14137503,C,A,359.23,10,non-EMS,nan,nan,none,nan,nan,False,nan
+II,14137514,C,T,322.78,11,EMS (G/C->A/T),nan,nan,none,nan,nan,False,nan

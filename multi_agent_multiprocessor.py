@@ -11,6 +11,8 @@ import math
 import os
 import pathlib
 import re
+import shutil
+import sys
 import textwrap
 import time
 import xml.etree.ElementTree as ET
@@ -32,6 +34,19 @@ CSV_PATH = os.getenv("CSV_PATH", "drp1.csv")
 OUTPUT_DIR = pathlib.Path("llm_variant_prioritization_outputs")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
+_STDIN_LINES: List[str] = []
+if not sys.stdin.isatty():
+    try:
+        _STDIN_LINES = [line.rstrip("\n\r") for line in sys.stdin]
+    except Exception:
+        pass
+
+
+def _input(prompt: str) -> str:
+    if _STDIN_LINES:
+        return _STDIN_LINES.pop(0) if _STDIN_LINES else ""
+    return input(prompt).strip()
+
 # =========================
 # API configuration
 # =========================
@@ -45,7 +60,7 @@ OPENAI_BACKOFF_BASE = float(os.getenv("OPENAI_BACKOFF_BASE", "2.0"))
 
 TOP_K = 30
 RUN_ID = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-os.environ["OPENAI_API_KEY"] = "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"
+os.environ["OPENAI_API_KEY"] = "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"
 os.environ["NCBI_API_KEY"] = "605418d3446353da6f9b17b37310caf65e08"
 WORMBASE_HEADERS = {
     "Accept": "application/json",
@@ -272,7 +287,7 @@ def coerce_float(x: Any) -> Optional[float]:
 
 
 def prompt_user_annotation_file(script_dir: pathlib.Path) -> str:
-    file_name = input(
+    file_name = _input(
         "Optional user annotation CSV filename in this script directory "
         "(e.g. user_annotation.csv). Press Enter to skip: "
     ).strip()
@@ -974,7 +989,7 @@ def build_gene_knowledge_entry(
     gene_info["distilled_mechanism"] = str(distill.get("distilled_mechanism", "") or "")
     return gene_name, gene_info, len(refs), len(gene_info["filtered_pubmed_ids"])
 
-AGENT1_PROMPT = input(
+AGENT1_PROMPT = _input(
     "Agent1Prompt (define phenotype + possible mechanisms causing that phenotype): "
 ).strip()
 if not AGENT1_PROMPT:
@@ -985,11 +1000,11 @@ if not AGENT1_PROMPT:
     )
 
 phenotype_description = (
-    input("Phenotype description for Agent1 filtering (press Enter to reuse Agent1Prompt): ").strip()
+    _input("Phenotype description for Agent1 filtering (press Enter to reuse Agent1Prompt): ").strip()
     or AGENT1_PROMPT
 )
 target_mechanisms = (
-    input("Target mechanisms for Agent1 filtering (press Enter to reuse Agent1Prompt): ").strip()
+    _input("Target mechanisms for Agent1 filtering (press Enter to reuse Agent1Prompt): ").strip()
     or AGENT1_PROMPT
 )
 
@@ -1099,11 +1114,17 @@ Evidence you may use:
 - Structured fields from the csv file: Gene_name, Effect, impact_bucket,  QUAL, DP, SIFT/PolyPhen.
 - NCBI publications: provided PubMed links.
 - WormBase context when available: WB_Overview and MANUAL_DESCRIPTION_WB.
+- Agent1 distilled mechanisms per gene when available (gene_knowledge.distilled_mechanism).
 
 Instructions:
 - Rank variants by causal probability (0-1) and provide confidence (0-1).
-- For each variant, write a 2-3 sentence narrative connecting mutation and gene function to phenotype.
-- Cite evidence in brackets, e.g., [Effect=stop_gained; impact=HIGH; QUAL=83.1; GeneRef: PMID 12345].
+- For each ranked variant, set:
+  - rationale: a single concise sentence summarizing why this gene/variant is placed at its rank, based on the available evidence; do NOT use square brackets or inline evidence lists here.
+  - key_evidence: short bullet strings capturing the specific supporting facts (effect/impact, QUAL/DP, distilled_mechanism, WormBase context, PubMed refs, etc.).
+- Separately, for each variant in the annotations list, write a 2-3 sentence narrative connecting mutation and gene function to phenotype.
+- In the narrative, cite evidence in brackets, e.g., [Effect=stop_gained; impact=HIGH; QUAL=83.1; GeneRef: PMID 12345].
+- When a distilled mechanism is available for the gene, also include it explicitly in the bracketed evidence as distilled_mechanism="...".
+- When WB_Overview or MANUAL_DESCRIPTION_WB text is available, explicitly cite it in the bracketed evidence as WB_Overview="..." and/or MANUAL_DESCRIPTION_WB="..." (shortened as needed).
 - Prefer HIGH-impact (nonsense/frameshift/essential splice) > damaging missense > low/unknown.
 - Do not fabricate references; only cite provided PubMed links.
 - Output JSON only; no chain-of-thought."""
@@ -1225,12 +1246,12 @@ USER_PROMPT_MAIN = {
 }
 if use_user_annotation_for_llm:
     USER_PROMPT_MAIN["user_annotation"] = annotation_text
-user_prompt= str(input("PROMPT: "))
+user_prompt = _input("PROMPT: ").strip()
 USER_PROMPT_MAIN["instructions"]["notes"].append(user_prompt)
 
 
 def prompt_run_count() -> int:
-    raw = input("How many LLM runs do you want on this gene set? ").strip()
+    raw = _input("How many LLM runs do you want on this gene set? ").strip()
     try:
         n = int(raw)
         if n < 1:
@@ -1243,7 +1264,7 @@ def prompt_run_count() -> int:
 
 NUM_LLM_RUNS = prompt_run_count()
 shot_dt = datetime.now()
-SHOT_TIMESTAMP = f"{shot_dt.year}_{shot_dt.month}_{shot_dt.day}_{shot_dt.hour}_{shot_dt.minute}"
+SHOT_TIMESTAMP = shot_dt.strftime("%Y_%m_%d_%H_%M")
 
 # =========================
 # LLM calls
@@ -1270,7 +1291,7 @@ def single_shot_call() -> Optional[LLMVariantOutput]:
 
 NARR_SYSTEM = """You are an expert in C. elegans mystery cell of male(MCM) neuron biology.
 For each variant, write a 2-3 sentence narrative using provided fields, NCBI refs, and WormBase context if present.
-Cite evidence in brackets, e.g., [Effect=missense; impact=MODERATE; GeneRef: PMID 12345].
+Cite evidence in brackets, e.g., [Effect=missense; impact=MODERATE; GeneRef: PMID 12345]. When WB_Overview or MANUAL_DESCRIPTION_WB text is available, explicitly cite it in the bracketed evidence as WB_Overview="..." and/or MANUAL_DESCRIPTION_WB="..." (shortened as needed).
 Return JSON: {"annotations":[{"variant_id":"string","gene":"string","narrative":"string","narrative_confidence":0.0}]}"""
 
 
@@ -1324,7 +1345,8 @@ def llm_narratives_in_chunks(items: List[Dict[str, Any]], chunk_size: int = 18) 
 
 RANK_SYSTEM = """Rank variants for causing mystery cell of male(MCM) neuron loss using provided summaries.
 Rank genes (not duplicate variants of the same gene) and return exactly top_k entries.
-Heuristics: HIGH-impact > damaging missense > low/unknown; integrate NCBI refs, WormBase context, and narrative confidence.
+Heuristics: HIGH-impact > damaging missense > low/unknown; integrate NCBI refs, WormBase context (WB_Overview and MANUAL_DESCRIPTION_WB), and narrative confidence.
+Within each ranking item, set rationale to a single concise sentence summarizing why this gene/variant is ranked at that position, without square brackets or inline evidence lists; place detailed evidence and citations into the key_evidence bullet strings instead.
 Output JSON only with fields: summary, most_likely, ranking[]."""
 
 
@@ -1542,11 +1564,72 @@ def rerank_exact_top_k_from_summaries(
 
 orig_small = pd.DataFrame(packed_dedup).copy()
 orig_small_ren = orig_small[
-    ["variant_id", "gene", "effect", "impact_bucket", "qual", "depth"]
+    [
+        "variant_id",
+        "gene",
+        "effect",
+        "impact_bucket",
+        "qual",
+        "depth",
+        "WB_Overview",
+        "MANUAL_DESCRIPTION_WB",
+    ]
 ].rename(columns={"gene": "Gene_name_csv"})
 user_annotation_map_by_variant = {r["variant_id"]: r.get("user_annotation", "no annotation") for r in packed_dedup}
 candidate_by_variant = {r["variant_id"]: r for r in pref}
 written_paths: List[pathlib.Path] = []
+gene_ranks_per_run: List[Dict[str, int]] = []
+all_genes_across_runs: set[str] = set()
+gene_run_details_per_run: List[Dict[str, Dict[str, str]]] = []
+
+
+def _rankdata(values: List[float]) -> List[float]:
+    n = len(values)
+    if n == 0:
+        return []
+    sorted_idx = sorted(range(n), key=lambda i: values[i])
+    ranks = [0.0] * n
+    i = 0
+    while i < n:
+        j = i
+        v = values[sorted_idx[i]]
+        while j + 1 < n and values[sorted_idx[j + 1]] == v:
+            j += 1
+        rank_start = i + 1
+        rank_end = j + 1
+        avg_rank = (rank_start + rank_end) / 2.0
+        for k in range(i, j + 1):
+            ranks[sorted_idx[k]] = avg_rank
+        i = j + 1
+    return ranks
+
+
+def _pearson_corr(x: List[float], y: List[float]) -> float:
+    n = len(x)
+    if n == 0 or n != len(y):
+        return 0.0
+    mean_x = sum(x) / n
+    mean_y = sum(y) / n
+    num = 0.0
+    den_x = 0.0
+    den_y = 0.0
+    for xi, yi in zip(x, y):
+        dx = xi - mean_x
+        dy = yi - mean_y
+        num += dx * dy
+        den_x += dx * dx
+        den_y += dy * dy
+    if den_x <= 0.0 or den_y <= 0.0:
+        return 0.0
+    return num / math.sqrt(den_x * den_y)
+
+
+def _spearman_corr_from_ranks(x: List[float], y: List[float]) -> float:
+    if not x or not y or len(x) != len(y):
+        return 0.0
+    rx = _rankdata(x)
+    ry = _rankdata(y)
+    return _pearson_corr(rx, ry)
 
 for shot_idx in range(1, NUM_LLM_RUNS + 1):
     print(f"\n=== LLM shot {shot_idx}/{NUM_LLM_RUNS} ===")
@@ -1619,6 +1702,8 @@ for shot_idx in range(1, NUM_LLM_RUNS + 1):
         "impact_bucket",
         "qual",
         "depth",
+        "WB_Overview",
+        "MANUAL_DESCRIPTION_WB",
         "user_annotation",
         "pubmed_ref_avaiable",
         "filtered_pubmed",
@@ -1629,14 +1714,45 @@ for shot_idx in range(1, NUM_LLM_RUNS + 1):
     ]
     final_df = final_df[[c for c in view_cols if c in final_df.columns]]
 
+    run_gene_ranks: Dict[str, int] = {}
+    for _, row in final_df.iterrows():
+        gene_name = str(row.get("gene") or "").strip()
+        if not gene_name:
+            continue
+        rank_value = int(row.get("rank"))
+        run_gene_ranks[gene_name] = rank_value
+        all_genes_across_runs.add(gene_name)
+    gene_ranks_per_run.append(run_gene_ranks)
+    run_gene_details: Dict[str, Dict[str, str]] = {}
+    for _, row in final_df.iterrows():
+        gene_name = str(row.get("gene") or "").strip()
+        if not gene_name:
+            continue
+        run_gene_details[gene_name] = {
+            "Narrative": str(row.get("Narrative") or ""),
+            "Rationale": str(row.get("rationale") or ""),
+            "impact_bucket": str(row.get("impact_bucket") or ""),
+            "WB_Overview": str(row.get("WB_Overview") or ""),
+            "MANUAL_DESCRIPTION_WB": str(row.get("MANUAL_DESCRIPTION_WB") or ""),
+            "effect": str(row.get("effect") or ""),
+            "user_annotation": str(row.get("user_annotation") or ""),
+            "pubmed_ref_avaiable": str(row.get("pubmed_ref_avaiable") or ""),
+            "filtered_pubmed": str(row.get("filtered_pubmed") or ""),
+            "agent1_publication_comments": str(row.get("agent1_publication_comments") or ""),
+        }
+    gene_run_details_per_run.append(run_gene_details)
+
     print("\n=== Top ranked genes (representative variants, preview) ===")
-    print(tabulate(final_df.head(20).fillna(""), headers="keys", tablefmt="github", showindex=False))
+    _tab = tabulate(final_df.head(20).fillna(""), headers="keys", tablefmt="github", showindex=False)
+    try:
+        print(_tab)
+    except UnicodeEncodeError:
+        print("[Preview skipped (encoding); see CSV for full output]")
 
     if not rank_df.empty:
         top_row = rank_df.sort_values("rank").iloc[0]
         print("\n=== Most likely causal gene (representative variant, LLM) ===")
-        print(
-            tabulate(
+        _tab2 = tabulate(
                 [
                     [
                         int(top_row["rank"]),
@@ -1651,12 +1767,267 @@ for shot_idx in range(1, NUM_LLM_RUNS + 1):
                 headers=["rank", "variant_id", "gene", "prob", "conf", "narrative", "narr_conf"],
                 tablefmt="github",
             )
+        try:
+            print(_tab2)
+        except UnicodeEncodeError:
+            print("[Preview skipped (encoding)]")
+
+    merged_path = OUTPUT_DIR / f"multi_agent_shot{shot_idx}_{SHOT_TIMESTAMP}.csv"
+    final_df.to_csv(merged_path, index=False, encoding="utf-8-sig")
+    written_paths.append(merged_path)
+
+if gene_ranks_per_run and all_genes_across_runs:
+    genes_sorted = sorted(all_genes_across_runs)
+    num_runs = len(gene_ranks_per_run)
+    max_rank_for_missing = TOP_K + 1
+
+    pairwise_corrs: List[float] = []
+    if num_runs >= 2:
+        for i in range(num_runs):
+            x = [float(gene_ranks_per_run[i].get(g, max_rank_for_missing)) for g in genes_sorted]
+            for j in range(i + 1, num_runs):
+                y = [float(gene_ranks_per_run[j].get(g, max_rank_for_missing)) for g in genes_sorted]
+                pairwise_corrs.append(_spearman_corr_from_ranks(x, y))
+        avg_pairwise_spearman = sum(pairwise_corrs) / len(pairwise_corrs) if pairwise_corrs else 0.0
+    else:
+        avg_pairwise_spearman = 1.0
+
+    gene_mean_ranks: Dict[str, float] = {}
+    gene_variances: Dict[str, float] = {}
+    gene_run_counts: Dict[str, int] = {}
+    for g in genes_sorted:
+        ranks = [float(run_map.get(g, max_rank_for_missing)) for run_map in gene_ranks_per_run]
+        mean_rank = sum(ranks) / num_runs
+        variance = sum((r - mean_rank) ** 2 for r in ranks) / num_runs
+        gene_mean_ranks[g] = mean_rank
+        gene_variances[g] = variance
+        gene_run_counts[g] = sum(1 for run_map in gene_ranks_per_run if g in run_map)
+
+    variability_path = OUTPUT_DIR / f"multi_agent_rank_variability_{SHOT_TIMESTAMP}.csv"
+    with variability_path.open("w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.writer(f)
+        writer.writerow([f"{avg_pairwise_spearman:.6f}"])
+        writer.writerow(["gene", "variance"])
+        for g in genes_sorted:
+            writer.writerow([g, f"{gene_variances[g]:.6f}"])
+    written_paths.append(variability_path)
+
+    integrated_rows = sorted(
+        [
+            (
+                g,
+                gene_mean_ranks.get(g, float("nan")),
+                gene_variances.get(g, float("nan")),
+                gene_run_counts.get(g, 0),
+            )
+            for g in genes_sorted
+        ],
+        key=lambda x: x[1],
+    )
+
+    integrated_csv_path = OUTPUT_DIR / f"multi_agent_integrated_ranking_{SHOT_TIMESTAMP}.csv"
+    with integrated_csv_path.open("w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.writer(f)
+        writer.writerow(["gene", "average_rank", "rank_variance", "n_runs_seen"])
+        for g, mean_rank, variance, run_count in integrated_rows:
+            writer.writerow([g, f"{mean_rank:.6f}", f"{variance:.6f}", run_count])
+    written_paths.append(integrated_csv_path)
+
+    integrated_html_path = OUTPUT_DIR / f"multi_agent_integrated_ranking_{SHOT_TIMESTAMP}.html"
+    integrated_data_genes: List[Dict[str, Any]] = []
+    for g, mean_rank, variance, run_count in integrated_rows:
+        runs_detail: List[Dict[str, Any]] = []
+        gene_meta: Dict[str, Any] = {
+            "impact_bucket": "",
+            "WB_Overview": "",
+            "MANUAL_DESCRIPTION_WB": "",
+            "effect": "",
+            "user_annotation": "",
+            "pubmed_ref_avaiable": "",
+            "filtered_pubmed": "",
+            "agent1_publication_comments": "",
+        }
+        for idx in range(num_runs):
+            run_idx = idx + 1
+            ranks_map = gene_ranks_per_run[idx]
+            details_map = gene_run_details_per_run[idx] if idx < len(gene_run_details_per_run) else {}
+            d = (details_map.get(g, {}) or {})
+            # capture per-run narrative/rationale
+            runs_detail.append(
+                {
+                    "run_index": run_idx,
+                    "rank": ranks_map.get(g),
+                    "Narrative": d.get("Narrative", ""),
+                    "Rationale": d.get("Rationale", ""),
+                }
+            )
+            # capture static gene metadata once (same across runs)
+            if d and not gene_meta["impact_bucket"]:
+                gene_meta["impact_bucket"] = d.get("impact_bucket", "") or ""
+                gene_meta["WB_Overview"] = d.get("WB_Overview", "") or ""
+                gene_meta["MANUAL_DESCRIPTION_WB"] = d.get("MANUAL_DESCRIPTION_WB", "") or ""
+                gene_meta["effect"] = d.get("effect", "") or ""
+                gene_meta["user_annotation"] = d.get("user_annotation", "") or ""
+                gene_meta["pubmed_ref_avaiable"] = d.get("pubmed_ref_avaiable", "") or ""
+                gene_meta["filtered_pubmed"] = d.get("filtered_pubmed", "") or ""
+                gene_meta["agent1_publication_comments"] = d.get("agent1_publication_comments", "") or ""
+        integrated_data_genes.append(
+            {
+                "gene": g,
+                "average_rank": mean_rank,
+                "rank_variance": variance,
+                "n_runs_seen": run_count,
+                "impact_bucket": gene_meta["impact_bucket"],
+                "WB_Overview": gene_meta["WB_Overview"],
+                "MANUAL_DESCRIPTION_WB": gene_meta["MANUAL_DESCRIPTION_WB"],
+                "effect": gene_meta["effect"],
+                "user_annotation": gene_meta["user_annotation"],
+                "pubmed_ref_avaiable": gene_meta["pubmed_ref_avaiable"],
+                "filtered_pubmed": gene_meta["filtered_pubmed"],
+                "agent1_publication_comments": gene_meta["agent1_publication_comments"],
+                "runs": runs_detail,
+            }
         )
 
-    merged_path = OUTPUT_DIR / f"LLM_shot{shot_idx}_{SHOT_TIMESTAMP}.csv"
-    final_df.to_csv(merged_path, index=False)
-    written_paths.append(merged_path)
+    integrated_payload = {
+        "timestamp": SHOT_TIMESTAMP,
+        "num_runs": num_runs,
+        "genes": integrated_data_genes,
+    }
+    data_json = json.dumps(integrated_payload, ensure_ascii=False).replace("</", "<\\/")
+
+    html_template = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Integrated Ranking</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 0; padding: 0; }
+    header { padding: 12px 16px; background: #1f2933; color: #f9fafb; }
+    header h1 { margin: 0; font-size: 20px; }
+    header p { margin: 4px 0 0 0; font-size: 13px; color: #d1d5db; }
+    main { display: flex; height: calc(100vh - 64px); }
+    #table-container { flex: 1; overflow: auto; padding: 12px 16px; }
+    table { border-collapse: collapse; width: 100%; font-size: 13px; }
+    th, td { border: 1px solid #e5e7eb; padding: 6px 8px; text-align: left; }
+    th { background: #f3f4f6; position: sticky; top: 0; z-index: 1; }
+    tr:hover { background: #eef2ff; cursor: pointer; }
+    #detail-panel { width: 38%; max-width: 520px; border-left: 1px solid #e5e7eb; padding: 12px 16px; overflow: auto; background: #f9fafb; }
+    #detail-title { font-weight: bold; margin-bottom: 8px; }
+    #detail-table { border-collapse: collapse; width: 100%; font-size: 12px; }
+    #detail-table th, #detail-table td { border: 1px solid #e5e7eb; padding: 4px 6px; vertical-align: top; }
+    #detail-table th { background: #e5e7eb; }
+    .muted { color: #6b7280; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Integrated Gene Ranking</h1>
+    <p>Click a gene to inspect narratives and rationales across runs (timestamp: {timestamp}, runs: {num_runs}).</p>
+  </header>
+  <main>
+    <section id="table-container">
+      <table id="genes-table">
+        <thead>
+          <tr>
+            <th>Gene</th>
+            <th>Average rank</th>
+            <th>Rank variance</th>
+            <th>Runs seen</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
+    <aside id="detail-panel">
+      <div id="detail-title" class="muted">Select a gene to see narratives, rationales, and gene-level context.</div>
+      <div id="detail-meta" class="muted" style="font-size:12px; margin-bottom:8px;"></div>
+      <table id="detail-table" style="display:none;">
+        <thead>
+          <tr>
+            <th>Run</th>
+            <th>Narrative</th>
+            <th>Rationale</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </aside>
+  </main>
+  <script>
+    const DATA = __DATA_JSON__;
+
+    function formatNumber(x) {
+      if (x === null || x === undefined || isNaN(x)) return '';
+      return x.toFixed(3);
+    }
+
+    function renderTable() {
+      const tbody = document.querySelector('#genes-table tbody');
+      tbody.innerHTML = '';
+      // DATA.genes is already sorted by average_rank ascending in the Python script.
+      const genes = DATA.genes || [];
+      for (const g of genes) {
+        const tr = document.createElement('tr');
+        tr.dataset.gene = g.gene;
+        tr.innerHTML = `
+          <td>${g.gene}</td>
+          <td>${formatNumber(g.average_rank)}</td>
+          <td>${formatNumber(g.rank_variance)}</td>
+          <td>${g.n_runs_seen}</td>
+        `;
+        tr.addEventListener('click', () => renderDetail(g));
+        tbody.appendChild(tr);
+      }
+    }
+
+    function renderDetail(geneEntry) {
+      const title = document.getElementById('detail-title');
+      const meta = document.getElementById('detail-meta');
+      const table = document.getElementById('detail-table');
+      const tbody = table.querySelector('tbody');
+      title.textContent = `Details for gene: ${geneEntry.gene}`;
+      const metaLines = [];
+      if (geneEntry.effect) metaLines.push(`<strong>Effect</strong>: ${geneEntry.effect}`);
+      if (geneEntry.impact_bucket) metaLines.push(`<strong>impact_bucket</strong>: ${geneEntry.impact_bucket}`);
+      if (geneEntry.user_annotation) metaLines.push(`<strong>user_annotation</strong>: ${geneEntry.user_annotation}`);
+      if (geneEntry.WB_Overview) metaLines.push(`<strong>WB_Overview</strong>: ${geneEntry.WB_Overview}`);
+      if (geneEntry.MANUAL_DESCRIPTION_WB) metaLines.push(`<strong>MANUAL_DESCRIPTION_WB</strong>: ${geneEntry.MANUAL_DESCRIPTION_WB}`);
+      if (geneEntry.pubmed_ref_avaiable) metaLines.push(`<strong>pubmed_ref_avaiable</strong>: ${geneEntry.pubmed_ref_avaiable}`);
+      if (geneEntry.filtered_pubmed) metaLines.push(`<strong>filtered_pubmed</strong>: ${geneEntry.filtered_pubmed}`);
+      if (geneEntry.agent1_publication_comments) metaLines.push(`<strong>agent1_publication_comments</strong>: ${geneEntry.agent1_publication_comments}`);
+      meta.innerHTML = metaLines.length ? metaLines.join('<br/>') : '';
+      tbody.innerHTML = '';
+      let hasRows = false;
+      for (const r of geneEntry.runs) {
+        const hasText = (r.Narrative && r.Narrative.trim()) || (r.Rationale && r.Rationale.trim());
+        if (!hasText) continue;
+        hasRows = true;
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${r.run_index}${r.rank ? ` (rank ${r.rank})` : ''}</td>
+          <td>${r.Narrative || ''}</td>
+          <td>${r.Rationale || ''}</td>
+        `;
+        tbody.appendChild(tr);
+      }
+      table.style.display = hasRows ? 'table' : 'none';
+      if (!hasRows) {
+        title.textContent += ' (no narratives/rationales recorded in the top list)';
+      }
+    }
+
+    renderTable();
+  </script>
+</body>
+</html>
+""".replace("__DATA_JSON__", data_json).replace("{timestamp}", SHOT_TIMESTAMP).replace("{num_runs}", str(num_runs))
+
+    integrated_html_path.write_text(html_template, encoding="utf-8")
+    written_paths.append(integrated_html_path)
 
 print("\nWROTE:")
 for p in written_paths:
     print(f"- {p.resolve()}")
+

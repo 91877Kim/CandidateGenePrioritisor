@@ -1,0 +1,33 @@
+# prioritising_input.txt
+# Lines starting with # are ignored. Order of non-comment lines must match below.
+#
+# Line 1: Homozygous SNP VCF path (for mapping). Leave empty to skip mapping.
+# Line 2: Hawaiian allele-ratio VCF path (for mapping). Leave empty to skip mapping.
+# Line 3: Optional mapping table path (e.g. outputs/mapping_interval_X_0_variants.csv).
+#         If non-empty and file exists: use this table and run multi_agent_with_mapping only.
+#         If all of Lines 1–3 are empty: run prioritisation without mapping.
+#         Otherwise: run mapping on the two VCFs above, then run multi_agent_with_mapping with the generated table.
+# Line 4: Main variant CSV path (e.g. drp1.csv).
+# Line 5: Optional user annotation CSV filename in script directory (e.g. user_annotation.csv). Leave empty to skip.
+# Line 6: Agent1 prompt (literature evaluation; phenotype + mechanisms).
+# Line 7: Agent2 prompt (reasoning / synthesis for the gene set).
+# Line 8: PubMed query suffix used after "({gene}) AND " for NCBI search
+#         (e.g. (Mystery cell of male(MCM) OR neuron loss) AND elegans).
+# Line 9: Analysis context for ranking/narrative prompts.
+# Line 10: Analysis goal for ranking/narrative prompts.
+# Line 11: How many LLM runs on this gene set (integer, e.g. 1 or 3).
+# Line 12: Optional mapping target chromosome identifier forwarded to mapping_code
+#         (e.g. X, III, chrX). Leave empty to keep mapping_code defaults.
+
+
+
+drp1.csv
+user_file.csv
+You are a C. elegans literature evaluator. Score the provided publication summary for its mechanistic relevance to a specific mutant phenotype. The Phenotype Context: MCM neurons — short for Mystery Cells of the Male. They are a pair of male-specific interneurons in the head, one left and one right. the mutated phenotype we are studying is the loss of MCM neurons in male C. elegans arising from the AMso(the one which normally divides asymmetrically to give MCM) divides symmetrically to generate two glial cells instead of the MCM. Target Mechanisms/Keywords: asymmetric division failure, cell division error. Rules: Look for mechanisms that biologically explain the phenotype. Do not just look for superficial word matches; look for mechanistic capability. Score broad, pleiotropic housekeeping genes low unless they are explicitly linked to the target mechanisms. Extract a 1-sentence mechanistic summary using only information explicitly supported by the provided publication summary. Prefer near-extractive wording. Do not infer unstated mechanisms.
+The identity of an affected gene as a chromatin factor, WNT component, or polarity factor should increase its plausibility as the causal allele, but these are only used as secondary/supportive evidence
+
+MCM neurons are normally derived from the division of amphid socket(AMso) glial cells during larval stage of sexual maturation in male, only male C. elegans have MCM neurons. The causal allele we are finding for the loss of MCM neurons resulting from the AMso divides symmetrically to generate two glial cells instead of the MCM
+You are an expert C. elegans forward-genetics analyst prioritising candidate causal variants for MCM-loss mutants.
+10
+X
+# end
